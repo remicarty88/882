@@ -100,53 +100,66 @@ async function fetchMarketData() {
 
 // WebSocket для реальных данных
 function initWebSocket() {
-    console.log('🔌 Подключение к WebSocket...');
+    console.log('🔌 Попытка прямого подключения к бирже...');
     try {
-        // Добавляем проверку на существование WebSocket
         if (socket) {
-            socket.onopen = null;
-            socket.onmessage = null;
-            socket.onclose = null;
-            socket.onerror = null;
             socket.close();
         }
 
+        // Используем защищенный протокол и основной эндпоинт
         const wsUrl = `wss://ws.twelvedata.com/v1/quotes?apikey=${API_KEY}`;
         socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
-            console.log('✅ WebSocket подключен успешно');
+            console.log('✅ ПОДКЛЮЧЕНО! Данные поступают в реальном времени.');
             socket.send(JSON.stringify({
                 "action": "subscribe",
                 "params": { "symbols": SYMBOL }
             }));
+            
+            // Поддерживаем соединение живым (Ping каждые 10 сек)
+            if (window._wsHeartbeat) clearInterval(window._wsHeartbeat);
+            window._wsHeartbeat = setInterval(() => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({"action": "heartbeat"}));
+                }
+            }, 10000);
         };
 
         socket.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data.toString());
-                if (data.event === 'price') {
-                    updatePrice(parseFloat(data.price));
-                }
-            } catch (e) {
-                // Игнорируем ошибки парсинга служебных сообщений
+            const data = JSON.parse(event.data);
+            
+            // Если получили цену - мгновенно в обработку
+            if (data.event === 'price') {
+                updatePrice(parseFloat(data.price));
+            }
+            
+            // Если ошибка ключа или лимита - бот скажет об этом
+            if (data.status === 'error') {
+                console.error('❌ Ошибка API:', data.message);
+                switchToHTTP();
             }
         };
 
-        socket.onclose = (event) => {
-            console.log('⚠️ WebSocket закрыт. Причина:', event.reason || 'Нет данных');
-            setTimeout(initWebSocket, 5000);
+        socket.onclose = () => {
+            console.log('🔄 Переподключение...');
+            setTimeout(initWebSocket, 3000); // Сократил до 3 секунд
         };
 
-        socket.onerror = (error) => {
-            // Если WebSocket не пускает, принудительно активируем HTTP-мониторинг чаще
-            console.log('🌐 Переход на высокочастотный HTTP-мониторинг...');
-            if (!window._httpInterval) {
-                window._httpInterval = setInterval(fetchMarketData, 10000); // Опрос каждые 10 сек
-            }
+        socket.onerror = (err) => {
+            console.log('🔌 WebSocket заблокирован. Использую ускоренный HTTP...');
+            switchToHTTP();
         };
+
     } catch (err) {
-        console.error('❌ Критическая ошибка WebSocket:', err);
+        switchToHTTP();
+    }
+}
+
+function switchToHTTP() {
+    if (!window._httpInterval) {
+        console.log('🚀 Активирован режим ULTRA-HTTP (опрос каждые 5 сек)');
+        window._httpInterval = setInterval(fetchMarketData, 5000); 
     }
 }
 
