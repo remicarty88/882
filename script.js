@@ -772,9 +772,8 @@ function checkTargetReached(currentPrice) {
     
     if (reached) {
         const profit = ((currentPrice - activeSignal.entryPrice) / activeSignal.entryPrice * 100).toFixed(2);
-        console.log(`\n🎉 ЦЕЛЬ ДОСТИГНУТА! Прибыль: ${profit}%\n`);
         
-        // 1. Формируем объект для уведомления
+        // 1. Срочно отправляем уведомление о закрытии
         const exitSignal = {
             type: activeSignal.positionType === 'long' ? 'ЗАКРЫТЬ BUY 💰' : 'ЗАКРЫТЬ SELL 💰',
             price: currentPrice,
@@ -782,21 +781,23 @@ function checkTargetReached(currentPrice) {
             action: 'EXIT',
             reason: `Цель достигнута. Прибыль: ${profit}%`
         };
-
-        // 2. СНАЧАЛА полностью сбрасываем состояние, чтобы следующие вызовы видели пустую позицию
-        const oldType = activeSignal.type;
-        activeSignal = null;
-        currentPosition = null; 
-        entryPrice = null;      
-        lastSignal = null;      // Сбрасываем тип последнего сигнала
-        lastSignalTime = 0;     // Сбрасываем время, чтобы новый анализ прошел сразу
-        
-        // 3. ОБНОВЛЯЕМ ИНТЕРФЕЙС И ОТПРАВЛЯЕМ В ТЕЛЕГРАМ
         displaySignal(exitSignal);
+
+        // 2. ЖЕСТКАЯ ОЧИСТКА ВСЕХ ПЕРЕМЕННЫХ
+        activeSignal = null;
+        currentPosition = null;
+        entryPrice = null;
+        entryTime = null;
+        lastSignal = null;      // Сбрасываем тип, чтобы он мог дать такой же сигнал снова
+        lastSignalTime = 0;     // Сбрасываем кулдаун в ноль
         
-        // 4. Мгновенно запускаем новый анализ для поиска следующей точки
-        console.log("🔄 Ищем новый сигнал без перезагрузки страницы...");
-        analyzeMarket();
+        console.log("✅ Сделка закрыта. Система полностью очищена и готова к новому циклу.");
+
+        // 3. ПРИНУДИТЕЛЬНЫЙ ПЕРЕЗАПУСК АНАЛИЗА ЧЕРЕЗ 1 СЕКУНДУ
+        setTimeout(() => {
+            console.log("🔄 Запуск нового поиска сигналов...");
+            analyzeMarket();
+        }, 1000);
     }
 }
 
