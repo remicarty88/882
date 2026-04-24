@@ -232,9 +232,9 @@ function analyzeMarket() {
     
     if (signal) {
         displaySignal(signal);
-        activeSignal = signal;
-        lastSignal = signal.type;
-        lastSignalTime = Date.now();
+        // activeSignal = signal; // Это теперь делается внутри displaySignal
+        // lastSignal = signal.type; // Это теперь делается внутри displaySignal
+        // lastSignalTime = Date.now(); // Это теперь делается внутри displaySignal
     }
     
     // Запоминаем текущие значения
@@ -580,13 +580,20 @@ async function sendTelegramMessage(signal) {
                `*Ожидаемая цель:* $${targetPrice}\n` +
                `*Уверенность:* ${confidence}%\n\n` +
                `📝 *Анализ:* ${signal.reason}`;
+    } else {
+        // Добавляем обработку обычных сигналов, если они не ENTRY/EXIT/WAIT
+        text = `📊 *ОБНОВЛЕНИЕ РЫНКА*\n\n` +
+               `*Статус:* ${signal.type}\n` +
+               `*Цена:* $${signal.price.toFixed(2)}\n` +
+               `*Уверенность:* ${signal.confidence}%`;
     }
 
     if (!text) return;
 
     try {
         const url = `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`;
-        const response = await fetch(url, {
+        // Используем fetchLib для поддержки Node.js
+        const response = await fetchLib(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -942,4 +949,5 @@ if (typeof module !== 'undefined' && module.exports) {
         calculateSMA
     };
 }
+
 
