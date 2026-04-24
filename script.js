@@ -6,17 +6,7 @@
 const API_KEY = '3ae45dbb1e9345a29a14e8557c5d04d2';
 const SYMBOL = 'XAU/USD';
 
-// Зависимости для работы в Node.js (автономность)
-let fetchLib, WebSocketLib;
-if (typeof window === 'undefined') {
-    fetchLib = require('node-fetch');
-    WebSocketLib = require('ws');
-} else {
-    fetchLib = window.fetch;
-    WebSocketLib = window.WebSocket;
-}
-
-// Telegram конфигурация
+// Telegram конфигурация (ЗАПОЛНИ ЭТИ ПОЛЯ)
 const TG_TOKEN = '8769551455:AAE6FEHT4CJ6WnxlMcYivm3vaJEv6JVi5Ok'; 
 const TG_CHAT_ID = '6201234513'; 
 
@@ -26,12 +16,11 @@ let currentData = [];
 let lastSignal = null;
 let lastSignalTime = 0;
 let activeSignal = null;
-let currentPosition = null; 
+let currentPosition = null; // 'long', 'short', or null
 let entryPrice = null;
 let entryTime = null;
-let lastAnalysisPrice = null; 
-let lastAnalysisRSI = null; 
-let lastAnalysisTime = 0; 
+let lastAnalysisPrice = null; // Запоминаем цену последнего анализа
+let lastAnalysisRSI = null; // Запоминаем RSI последнего анализа
 
 // ==========================================
 // ОСНОВНЫЕ ФУНКЦИИ
@@ -67,11 +56,12 @@ async function sendTelegramRawMessage(text) {
     }
 }
 
+// Получение рыночных данных
 async function fetchMarketData() {
     try {
-        console.log('📥 Получение точных биржевых данных...');
-        const url = `https://api.twelvedata.com/time_series?symbol=${SYMBOL}&interval=1min&outputsize=50&apikey=${API_KEY}`;
-        const response = await fetchLib(url);
+        console.log('📥 Запрос исторических данных...');
+        const url = `https://api.twelvedata.com/time_series?symbol=${SYMBOL}&interval=1min&apikey=${API_KEY}`;
+        const response = await fetch(url);
         const data = await response.json();
         
         if (data.values && data.values.length > 0) {
@@ -83,89 +73,65 @@ async function fetchMarketData() {
                 close: parseFloat(d.close)
             })).reverse();
             
-            const lastClose = currentData[currentData.length - 1].close;
-            console.log(`📊 БИРЖА: $${lastClose.toFixed(2)} | Загружено: ${currentData.length} свечей`);
-            
-            // Сразу анализируем после получения данных
+            console.log(`📊 РЕАЛЬНЫЙ РЫНОК: Загружено ${currentData.length} свечей`);
             analyzeMarket();
-            
-            if (typeof updateSystemStatus === 'function') {
-                updateSystemStatus(true, false);
-            }
+            updateSystemStatus(true, false);
+        } else {
+            console.warn('⚠️ API Twelve Data недоступно или лимиты исчерпаны. Переход в SMART ANALYZER...');
+            generateMockData(); 
+            updateSystemStatus(false, true);
         }
     } catch (error) {
-        console.error('❌ Ошибка API:', error.message);
+        console.error('❌ Ошибка сети, переход в SMART ANALYZER:', error);
+        generateMockData();
+        updateSystemStatus(false, true);
     }
 }
 
+// WebSocket для реальных данных
 function initWebSocket() {
-    console.log('🔗 Попытка подключения к WebSocket (Direct Real-time)...');
+    console.log('🔗 Попытка подключения к WebSocket...');
+    const wsUrl = `wss://ws.twelvedata.com/v1/quotes/price?apikey=${API_KEY}`;
     
-    // Очистка старого сокета
     if (socket) {
-        try {
-            socket.onopen = null;
-            socket.onmessage = null;
-            socket.onclose = null;
-            socket.onerror = null;
-            socket.close();
-        } catch(e) {}
+        socket.close();
     }
 
-    // Правильный URL для WebSocket Twelve Data (миллисекундные котировки)
-    const wsUrl = `wss://ws.twelvedata.com/v1/quotes?apikey=${API_KEY}`;
+    socket = new WebSocket(wsUrl);
     
-    try {
-        socket = new WebSocketLib(wsUrl);
-
-        socket.onopen = () => {
-            console.log('✅ WebSocket: ПОДКЛЮЧЕНО К БИРЖЕ');
-            // Подписываемся на золото
-            socket.send(JSON.stringify({
-                action: "subscribe",
-                params: { symbols: SYMBOL }
-            }));
-            
-            // Пинг для поддержания связи
-            if (window._wsHeartbeat) clearInterval(window._wsHeartbeat);
-            window._wsHeartbeat = setInterval(() => {
-                if (socket.readyState === (WebSocketLib.OPEN || 1)) {
-                    socket.send(JSON.stringify({ action: "heartbeat" }));
-                }
-            }, 10000);
-        };
-
-        socket.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                
-                // Обработка рыночной цены
-                if (data.event === 'price' && data.price) {
-                    updatePrice(parseFloat(data.price));
-                } 
-                
-                // Проверка ошибок от сервера
-                if (data.status === 'error') {
-                    console.error('❌ WebSocket API Error:', data.message);
-                }
-            } catch (e) {
-                console.warn('⚠️ Ошибка обработки данных сокета');
+    socket.onopen = () => {
+        console.log('✅ WebSocket подключен успешно');
+        socket.send(JSON.stringify({
+            action: "subscribe",
+            params: {
+                symbols: SYMBOL
             }
-        };
-
-        socket.onclose = (event) => {
-            console.warn('⚠️ WebSocket отключен. Причина:', event.code, event.reason);
-            // Быстрое переподключение через 2 секунды
-            setTimeout(initWebSocket, 2000);
-        };
-
-        socket.onerror = (error) => {
-            console.error('❌ WebSocket Connection Error');
-        };
-    } catch (e) {
-        console.error('❌ Не удалось создать WebSocket:', e);
+        }));
+        updateSystemStatus(currentData.length >= 20);
+    };
+    
+    socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.price) {
+            updatePrice(parseFloat(data.price));
+        }
+        // Если пришло сообщение об ошибке подписки
+        if (data.event === "error") {
+            console.error('❌ WebSocket ошибка подписки:', data.message);
+            showNotification('ОШИБКА ПОДПИСКИ', data.message, 'danger');
+        }
+    };
+    
+    socket.onclose = () => {
+        console.warn('⚠️ WebSocket отключен. Переподключение через 5 секунд...');
+        updateSystemStatus(currentData.length >= 20);
         setTimeout(initWebSocket, 5000);
-    }
+    };
+    
+    socket.onerror = (error) => {
+        console.error('❌ WebSocket ошибка:', error);
+        updateSystemStatus(false);
+    };
 }
 
 // ==========================================
@@ -177,39 +143,54 @@ function analyzeMarket() {
     
     const last = currentData[currentData.length - 1];
     const rsi = calculateRSI();
-    const sma10 = calculateSMA(10);
     const sma20 = calculateSMA(20);
+    const sma50 = calculateSMA(50);
+    const levels = calculateLevels();
+    
+    // Проверяем есть ли реальные изменения
+    const priceChange = lastAnalysisPrice ? Math.abs(last.close - lastAnalysisPrice) : 0;
+    const rsiChange = lastAnalysisRSI ? Math.abs(rsi - lastAnalysisRSI) : 0;
     
     const now = Date.now();
+    // 1. Анализируем если цена скакнула на $0.3 или RSI на 0.5 (реальные скачки)
+    // 2. Или если прошло 2 минуты с последнего сообщения (регулярное обновление)
+    const isSignificantJump = priceChange > 0.3 || rsiChange > 0.5;
+    const isTimeUpdate = (now - lastSignalTime > 120000);
     
-    // Если уже есть активный сигнал - не ищем новый
-    if (activeSignal) return;
-
+    if (!isSignificantJump && !isTimeUpdate && !activeSignal) {
+        return; 
+    }
+    
+    console.log(`🔍 АНАЛИЗ: Цена ${last.close.toFixed(2)} (изменение: ${priceChange.toFixed(2)}), RSI: ${rsi.toFixed(1)}`);
+    
     // Определяем сигнал
-    const signal = generateSignal(rsi, sma20, 0, last, {});
+    const signal = generateSignal(rsi, sma20, sma50, last, levels);
     
     if (signal) {
-        // Минимальная задержка между сообщениями в ТГ (30 сек для прогноза, мгновенно для входа)
-        const isEntry = signal.action === 'ENTRY';
-        const cooldown = isEntry ? 0 : 30000;
+        // Отправляем в Telegram только если:
+        // - Это новый тип сигнала (был ВХОД, стал ВЫХОД)
+        // - Или это прогноз WAIT, но прошло 2 минуты (чтобы не флудить)
+        // - Или если это ВХОД (всегда отправляем сразу)
         
-        if (now - lastSignalTime > cooldown) {
-            if (typeof displaySignal === 'function') displaySignal(signal);
-            sendTelegramMessage(signal);
-            
-            if (isEntry) {
-                activeSignal = signal;
-                currentPosition = signal.positionType;
-                entryPrice = signal.price;
-            }
-            
+        const isEntry = signal.action === 'ENTRY';
+        const isExit = signal.action === 'EXIT';
+        const isNewType = lastSignal !== signal.type;
+        const isCooldownOver = (now - lastSignalTime > 120000);
+
+        if (isEntry || isExit || (isNewType && isCooldownOver) || isCooldownOver) {
+            displaySignal(signal);
+            activeSignal = signal;
             lastSignal = signal.type;
             lastSignalTime = now;
         }
     }
     
+    // Запоминаем текущие значения
     lastAnalysisPrice = last.close;
     lastAnalysisRSI = rsi;
+    
+    // Обновляем прогноз
+    updateForecast(last, rsi, sma20, sma50, levels);
 }
 
 function generateSignal(rsi, sma20, sma50, last, levels) {
@@ -222,10 +203,9 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     const isBullTrend = last.close > calculateSMA(10); // Быстрая скользящая
     const isBearTrend = last.close < calculateSMA(10); 
     
-    // RSI для скальпинга (очень чувствительный)
-    const rsiBullish = rsi < 48; 
-    const rsiBearish = rsi > 52; 
-
+    // RSI для скальпинга (Оптимальный баланс)
+    const rsiBullish = rsi > 30 && rsi < 50; 
+    const rsiBearish = rsi > 50 && rsi < 75; 
     // Минимальное замедление цены для скальп-входа
     const lastCandleBody = Math.abs(last.close - last.open);
     const isPriceStalled = lastCandleBody < 1.5; 
@@ -484,20 +464,19 @@ async function sendTelegramMessage(signal) {
 
     let text = "";
     if (signal.action === 'ENTRY') {
-        const targetDist = signal.target && signal.price ? Math.abs(signal.target - signal.price).toFixed(2) : "1.50";
-        
-        text = `🎯 *БЫСТРЫЙ ВХОД!* (Мгновенно)\n\n` +
+        text = `🎯 *СИГНАЛ ВХОДА!*\n\n` +
                `*Направление:* ${signal.type}\n` +
-               `*Входи по рынку сейчас!*\n` +
-               `*Тейк-профит:* +$${targetDist}\n\n` +
-               `⚠️ *Не входи, если цена в МТ уже ушла на $0.5 от ${signal.price ? signal.price.toFixed(2) : 'текущей'}*`;
+               `*Цена:* $${signal.price.toFixed(2)}\n` +
+               `*Цель (TP):* $${signal.target.toFixed(2)}\n` +
+               `*Стоп (SL):* $${signal.stop.toFixed(2)}\n` +
+               `*Уверенность:* ${signal.confidence}%\n\n` +
+               `📝 *Анализ:* ${signal.reason}`;
     } else if (signal.action === 'EXIT') {
         const profitEmoji = signal.profit > 0 ? '💰' : '⚠️';
-        const priceDisplay = signal.price ? signal.price.toFixed(2) : 'рыночной';
         text = `${profitEmoji} *ЗАКРЫТИЕ ПОЗИЦИИ*\n\n` +
                `*Результат:* ${signal.type}\n` +
-               `*Цена выхода:* $${priceDisplay}\n` +
-               `*Прибыль/Убыток:* ${signal.profit || 0}%`;
+               `*Цена выхода:* $${signal.price.toFixed(2)}\n` +
+               `*Прибыль/Убыток:* ${signal.profit}%`;
     } else if (signal.action === 'WAIT') {
         const trendEmoji = signal.type.includes('РОСТ') ? '📈' : '📉';
         text = `${trendEmoji} *ТЕКУЩИЙ ПРОГНОЗ*\n\n` +
@@ -674,7 +653,8 @@ function addSignalToPage(signal) {
         timeHtml = `<div class="signal-time-estimate">Время до цели: ${signal.timeToTarget}</div>`;
     }
     
-    signalItem.innerHTML = `
+        const timeToTarget = calculateTimeToTarget(signal.price, signal.target);
+        signalItem.innerHTML = `
         <div class="signal-header">
             <span class="signal-type">${signal.type}</span>
             <span class="signal-time">${time}</span>
@@ -682,7 +662,7 @@ function addSignalToPage(signal) {
         <div class="signal-price">$${signal.price.toFixed(2)}</div>
         <div class="signal-reason">${signal.reason}</div>
         ${targetHtml}
-        ${timeHtml}
+        <div class="signal-time-estimate">Время до цели: ${timeToTarget}</div>
         <div class="signal-status">Активный сигнал</div>
     `;
     
@@ -752,18 +732,8 @@ function updateSystemStatus(isReal = false, isFallback = false) {
 function updatePrice(newPrice) {
     if (currentData.length === 0) return;
     
-    // 1. МГНОВЕННОЕ ОБНОВЛЕНИЕ ЦЕНЫ НА ЭКРАНЕ
-    if (typeof updatePriceDisplay === 'function') {
-        updatePriceDisplay(newPrice);
-    }
-    
-    // 2. ПРОВЕРКА ЦЕЛИ (миллисекунды)
-    if (activeSignal) {
-        checkTargetReached(newPrice);
-    }
-    
-    // 3. АНАЛИЗ ПРИ КАЖДОМ ТИКЕ
-    analyzeMarket();
+    // Обновляем цену на странице
+    updatePriceDisplay(newPrice);
     
     const lastCandle = currentData[currentData.length - 1];
     const now = Math.floor(Date.now() / 1000);
@@ -798,44 +768,42 @@ function updatePrice(newPrice) {
 }
 
 function checkTargetReached(currentPrice) {
-    if (!activeSignal) return;
-    
-    const isLong = currentPosition === 'long';
-    const target = activeSignal.target;
-    const stop = activeSignal.stop;
+    if (!activeSignal || !activeSignal.target) return;
     
     let reached = false;
-    if (isLong) {
-        if (currentPrice >= target || currentPrice <= stop) reached = true;
-    } else {
-        if (currentPrice <= target || currentPrice >= stop) reached = true;
+    
+    if (activeSignal.type === 'BUY' && currentPrice >= activeSignal.target) {
+        reached = true;
+    } else if (activeSignal.type === 'SELL' && currentPrice <= activeSignal.target) {
+        reached = true;
     }
     
     if (reached) {
-        const profit = isLong ? 
-            ((currentPrice - entryPrice) / entryPrice * 100).toFixed(2) : 
-            ((entryPrice - currentPrice) / entryPrice * 100).toFixed(2);
+        const profit = ((currentPrice - activeSignal.entryPrice) / activeSignal.entryPrice * 100).toFixed(2);
         
+        // Отправляем уведомление о закрытии
         const exitSignal = {
-            type: profit >= 0 ? 'ФИКСИРУЕМ ПРИБЫЛЬ 💰' : 'ЗАКРЫТЬ (STOP) ⚠️',
+            type: activeSignal.positionType === 'long' ? 'ЗАКРЫТЬ BUY 💰' : 'ЗАКРЫТЬ SELL 💰',
             price: currentPrice,
             profit: profit,
             action: 'EXIT',
-            reason: profit >= 0 ? `Профит: +${profit}%` : `Убыток: ${profit}%`
+            reason: `Цель достигнута. Прибыль: ${profit}%`
         };
+        displaySignal(exitSignal);
 
-        // Мгновенный сброс
+        // ПОЛНЫЙ СБРОС СОСТОЯНИЯ ДЛЯ ПОИСКА НОВОГО СИГНАЛА
         activeSignal = null;
         currentPosition = null;
         entryPrice = null;
         lastSignal = null;
-        lastSignalTime = Date.now();
-
-        if (typeof displaySignal === 'function') displaySignal(exitSignal);
-        sendTelegramMessage(exitSignal);
+        lastSignalTime = 0; // Сбрасываем кулдаун, чтобы искать новый сигнал сразу
         
-        // Сразу ищем новый вход
-        setTimeout(analyzeMarket, 1000);
+        console.log(`\n🎉 ЦЕЛЬ ДОСТИГНУТА! Состояние сброшено, ищем новый сигнал...\n`);
+        
+        // Сразу запускаем поиск нового сигнала без перезагрузки страницы
+        setTimeout(() => {
+            analyzeMarket();
+        }, 1000);
     }
 }
 
