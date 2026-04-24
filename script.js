@@ -775,8 +775,19 @@ function checkTargetReached(currentPrice) {
         const profit = ((currentPrice - activeSignal.entryPrice) / activeSignal.entryPrice * 100).toFixed(2);
         console.log(`\n🎉 ЦЕЛЬ ДОСТИГНУТА! Прибыль: ${profit}%\n`);
         
+        // Отправляем уведомление о закрытии перед сбросом
+        const exitSignal = {
+            type: activeSignal.positionType === 'long' ? 'ЗАКРЫТЬ BUY 💰' : 'ЗАКРЫТЬ SELL 💰',
+            price: currentPrice,
+            profit: profit,
+            action: 'EXIT'
+        };
+        displaySignal(exitSignal);
+
         // Сбрасываем активный сигнал и время, чтобы разрешить немедленное обновление
         activeSignal = null;
+        currentPosition = null; // ВАЖНО: сбросить текущую позицию
+        entryPrice = null;      // ВАЖНО: сбросить цену входа
         lastSignal = null;
         lastSignalTime = 0; 
         
