@@ -100,36 +100,54 @@ async function fetchMarketData() {
 
 // WebSocket для реальных данных
 function initWebSocket() {
-    console.log('� Подключение к WebSocket...');
-    const wsUrl = `wss://ws.twelvedata.com/v1/quotes?apikey=${API_KEY}`;
-    socket = new WebSocket(wsUrl);
-
-    socket.onopen = () => {
-        console.log('✅ WebSocket подключен');
-        socket.send(JSON.stringify({
-            "action": "subscribe",
-            "params": { "symbols": SYMBOL }
-        }));
-    };
-
-    socket.onmessage = (event) => {
-        const data = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
-        if (data.event === 'price') {
-            updatePrice(parseFloat(data.price));
+    console.log('🔌 Подключение к WebSocket...');
+    try {
+        // Добавляем проверку на существование WebSocket
+        if (socket) {
+            socket.onopen = null;
+            socket.onmessage = null;
+            socket.onclose = null;
+            socket.onerror = null;
+            socket.close();
         }
-    };
 
-    socket.onclose = () => {
-        console.log('⚠️ Связь потеряна. Переподключение через 5 сек...');
-        console.warn('⚠️ WebSocket отключен. Переподключение через 5 секунд...');
-        updateSystemStatus(currentData.length >= 20);
-        setTimeout(initWebSocket, 5000);
-    };
-    
-    socket.onerror = (error) => {
-        console.error('❌ WebSocket ошибка:', error);
-        updateSystemStatus(false);
-    };
+        const wsUrl = `wss://ws.twelvedata.com/v1/quotes?apikey=${API_KEY}`;
+        socket = new WebSocket(wsUrl);
+
+        socket.onopen = () => {
+            console.log('✅ WebSocket подключен успешно');
+            socket.send(JSON.stringify({
+                "action": "subscribe",
+                "params": { "symbols": SYMBOL }
+            }));
+        };
+
+        socket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data.toString());
+                if (data.event === 'price') {
+                    updatePrice(parseFloat(data.price));
+                }
+            } catch (e) {
+                // Игнорируем ошибки парсинга служебных сообщений
+            }
+        };
+
+        socket.onclose = (event) => {
+            console.log('⚠️ WebSocket закрыт. Причина:', event.reason || 'Нет данных');
+            setTimeout(initWebSocket, 5000);
+        };
+
+        socket.onerror = (error) => {
+            // Если WebSocket не пускает, принудительно активируем HTTP-мониторинг чаще
+            console.log('🌐 Переход на высокочастотный HTTP-мониторинг...');
+            if (!window._httpInterval) {
+                window._httpInterval = setInterval(fetchMarketData, 10000); // Опрос каждые 10 сек
+            }
+        };
+    } catch (err) {
+        console.error('❌ Критическая ошибка WebSocket:', err);
+    }
 }
 
 // ==========================================
@@ -629,10 +647,13 @@ function addSignalToPage(signal) {
     let timeHtml = '';
     
     if (signal.target && signal.type !== 'HOLD') {
-        const profit = ((signal.target - signal.price) / signal.price * 100).toFixed(2);
-        const direction = signal.type === 'BUY' ? '+' : '';
+        const profit = ((Math.abs(signal.target - signal.price)) / signal.price * 100).toFixed(2);
+        const direction = signal.type.includes('BUY') || (typeof isUp !== 'undefined' && isUp) ? '+' : '-';
         targetHtml = `<div class="signal-target">Цель: $${signal.target.toFixed(2)} (${direction}${profit}%)</div>`;
-        timeHtml = `<div class="signal-time-estimate">Время до цели: ${signal.timeToTarget}</div>`;
+        
+        // Исправляем расчет времени
+        const timeVal = typeof calculateTimeToTarget === 'function' ? calculateTimeToTarget(signal.price, signal.target) : '5-10 мин';
+        timeHtml = `<div class="signal-time-estimate">Время до цели: ${timeVal}</div>`;
     }
     
     signalItem.innerHTML = `
