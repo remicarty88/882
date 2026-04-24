@@ -121,14 +121,12 @@ async function fetchMarketData() {
             analyzeMarket();
             updateSystemStatus(true, false);
         } else {
-            console.warn('⚠️ API Twelve Data недоступно или лимиты исчерпаны. Переход в SMART ANALYZER...');
-            generateMockData(); 
-            updateSystemStatus(false, true);
+            console.error('❌ Ошибка Twelve Data: данные не получены. Проверьте API лимиты.');
+            updateSystemStatus(false, false);
         }
     } catch (error) {
-        console.error('❌ Ошибка сети, переход в SMART ANALYZER:', error);
-        generateMockData();
-        updateSystemStatus(false, true);
+        console.error('❌ Ошибка сети:', error);
+        updateSystemStatus(false, false);
     }
 }
 
@@ -392,6 +390,15 @@ function calculateRSI(period = 14) {
     const avgLoss = losses / period;
     const rs = avgGain / avgLoss;
     return 100 - (100 / (1 + rs));
+}
+
+function calculateSMA(period) {
+    if (currentData.length < period) return currentData[currentData.length - 1].close;
+    let sum = 0;
+    for (let i = currentData.length - period; i < currentData.length; i++) {
+        sum += currentData[i].close;
+    }
+    return sum / period;
 }
 
 function calculateEMA(period, data = currentData) {
@@ -892,30 +899,6 @@ function checkTargetReached(currentPrice) {
         // Немедленно запускаем новый анализ для поиска следующей точки
         analyzeMarket();
     }
-}
-
-function generateMockData() {
-    console.log('📊 Генерация тестовых данных...');
-    const basePrice = 4710;
-    const now = Math.floor(Date.now() / 1000);
-    
-    for (let i = 100; i >= 0; i--) {
-        const volatility = 0.005;
-        const trend = i > 50 ? 1 : -1;
-        const random = (Math.random() - 0.5) * volatility;
-        const price = basePrice + (trend * i * 0.1) + (random * basePrice);
-        
-        currentData.push({
-            time: now - (i * 60),
-            open: price,
-            high: price * (1 + Math.random() * 0.001),
-            low: price * (1 - Math.random() * 0.001),
-            close: price
-        });
-    }
-    
-    console.log(`✅ SMART ANALYZER готов. Сгенерировано ${currentData.length} свечей.`);
-    analyzeMarket(); // Сразу запускаем первый анализ
 }
 
 function startAnalysis() {
