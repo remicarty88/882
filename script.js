@@ -6,7 +6,17 @@
 const API_KEY = '3ae45dbb1e9345a29a14e8557c5d04d2';
 const SYMBOL = 'XAU/USD';
 
-// Telegram конфигурация (ЗАПОЛНИ ЭТИ ПОЛЯ)
+// Зависимости для работы в Node.js (автономность)
+let fetchLib, WebSocketLib;
+if (typeof window === 'undefined') {
+    fetchLib = require('node-fetch');
+    WebSocketLib = require('ws');
+} else {
+    fetchLib = window.fetch;
+    WebSocketLib = window.WebSocket;
+}
+
+// Telegram конфигурация
 const TG_TOKEN = '8769551455:AAE6FEHT4CJ6WnxlMcYivm3vaJEv6JVi5Ok'; 
 const TG_CHAT_ID = '6201234513'; 
 
@@ -16,11 +26,12 @@ let currentData = [];
 let lastSignal = null;
 let lastSignalTime = 0;
 let activeSignal = null;
-let currentPosition = null; // 'long', 'short', or null
+let currentPosition = null; 
 let entryPrice = null;
 let entryTime = null;
-let lastAnalysisPrice = null; // Запоминаем цену последнего анализа
-let lastAnalysisRSI = null; // Запоминаем RSI последнего анализа
+let lastAnalysisPrice = null; 
+let lastAnalysisRSI = null; 
+let lastAnalysisTime = 0; 
 
 // ==========================================
 // ОСНОВНЫЕ ФУНКЦИИ
@@ -56,12 +67,11 @@ async function sendTelegramRawMessage(text) {
     }
 }
 
-// Получение рыночных данных
 async function fetchMarketData() {
     try {
-        console.log('📥 Запрос исторических данных...');
-        const url = `https://api.twelvedata.com/time_series?symbol=${SYMBOL}&interval=1min&apikey=${API_KEY}`;
-        const response = await fetch(url);
+        console.log('📥 Получение точных биржевых данных...');
+        const url = `https://api.twelvedata.com/time_series?symbol=${SYMBOL}&interval=1min&outputsize=50&apikey=${API_KEY}`;
+        const response = await fetchLib(url);
         const data = await response.json();
         
         if (data.values && data.values.length > 0) {
@@ -73,64 +83,58 @@ async function fetchMarketData() {
                 close: parseFloat(d.close)
             })).reverse();
             
-            console.log(`📊 РЕАЛЬНЫЙ РЫНОК: Загружено ${currentData.length} свечей`);
+            const lastClose = currentData[currentData.length - 1].close;
+            console.log(`📊 БИРЖА: $${lastClose.toFixed(2)} | Загружено: ${currentData.length} свечей`);
+            
+            // Сразу анализируем после получения данных
             analyzeMarket();
-            updateSystemStatus(true, false);
-        } else {
-            console.warn('⚠️ API Twelve Data недоступно или лимиты исчерпаны. Переход в SMART ANALYZER...');
-            generateMockData(); 
-            updateSystemStatus(false, true);
+            
+            if (typeof updateSystemStatus === 'function') {
+                updateSystemStatus(true, false);
+            }
         }
     } catch (error) {
-        console.error('❌ Ошибка сети, переход в SMART ANALYZER:', error);
-        generateMockData();
-        updateSystemStatus(false, true);
+        console.error('❌ Ошибка API:', error.message);
     }
 }
 
-// WebSocket для реальных данных
 function initWebSocket() {
-    console.log('🔗 Попытка подключения к WebSocket...');
-    const wsUrl = `wss://ws.twelvedata.com/v1/quotes/price?apikey=${API_KEY}`;
+    console.log('🔗 Запуск WebSocket для миллисекундных обновлений...');
+    const wsUrl = `wss://ws.twelvedata.com/v1/quotes?apikey=${API_KEY}`;
     
     if (socket) {
-        socket.close();
+        try { socket.close(); } catch(e) {}
     }
 
-    socket = new WebSocket(wsUrl);
+    socket = new WebSocketLib(wsUrl);
     
     socket.onopen = () => {
-        console.log('✅ WebSocket подключен успешно');
+        console.log('✅ ПОДКЛЮЧЕНО К БИРЖЕ (REAL-TIME)');
         socket.send(JSON.stringify({
             action: "subscribe",
-            params: {
-                symbols: SYMBOL
-            }
+            params: { symbols: SYMBOL }
         }));
-        updateSystemStatus(currentData.length >= 20);
     };
     
     socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.price) {
-            updatePrice(parseFloat(data.price));
-        }
-        // Если пришло сообщение об ошибке подписки
-        if (data.event === "error") {
-            console.error('❌ WebSocket ошибка подписки:', data.message);
-            showNotification('ОШИБКА ПОДПИСКИ', data.message, 'danger');
+        try {
+            const data = JSON.parse(event.data);
+            if (data.event === 'price' && data.price) {
+                const price = parseFloat(data.price);
+                updatePrice(price);
+            }
+        } catch (e) {
+            // Ошибка парсинга
         }
     };
     
     socket.onclose = () => {
-        console.warn('⚠️ WebSocket отключен. Переподключение через 5 секунд...');
-        updateSystemStatus(currentData.length >= 20);
-        setTimeout(initWebSocket, 5000);
+        console.warn('⚠️ Связь потеряна. Авто-восстановление...');
+        setTimeout(initWebSocket, 2000);
     };
     
     socket.onerror = (error) => {
-        console.error('❌ WebSocket ошибка:', error);
-        updateSystemStatus(false);
+        console.error('❌ Ошибка WebSocket');
     };
 }
 
@@ -143,47 +147,39 @@ function analyzeMarket() {
     
     const last = currentData[currentData.length - 1];
     const rsi = calculateRSI();
+    const sma10 = calculateSMA(10);
     const sma20 = calculateSMA(20);
-    const sma50 = calculateSMA(50);
-    const levels = calculateLevels();
     
-    // Проверяем есть ли реальные изменения
-    const priceChange = lastAnalysisPrice ? Math.abs(last.close - lastAnalysisPrice) : 0;
-    const rsiChange = lastAnalysisRSI ? Math.abs(rsi - lastAnalysisRSI) : 0;
-    
-    // Анализируем только если:
-    // 1. Первый анализ
-    // 2. Цена изменилась (хотя бы на $0.1 для скальпинга)
-    // 3. RSI изменился
-    // 4. Прошел минимальный интервал (10 секунд)
     const now = Date.now();
-    const significantChange = !lastAnalysisPrice || 
-                             priceChange > 0.1 || 
-                             rsiChange > 0.1 || 
-                             (now - lastSignalTime > 10000);
     
-    if (!significantChange) {
-        return; // Пропускаем анализ - нет значимых изменений
-    }
-    
-    console.log(`🔍 АНАЛИЗ: Цена ${last.close.toFixed(2)} (изменение: ${priceChange.toFixed(2)}), RSI: ${rsi.toFixed(1)} (изменение: ${rsiChange.toFixed(1)})`);
-    
+    // Если уже есть активный сигнал - не ищем новый
+    if (activeSignal) return;
+
     // Определяем сигнал
-    const signal = generateSignal(rsi, sma20, sma50, last, levels);
+    const signal = generateSignal(rsi, sma20, 0, last, {});
     
     if (signal) {
-        displaySignal(signal);
-        activeSignal = signal;
-        lastSignal = signal.type;
-        lastSignalTime = Date.now();
+        // Минимальная задержка между сообщениями в ТГ (30 сек для прогноза, мгновенно для входа)
+        const isEntry = signal.action === 'ENTRY';
+        const cooldown = isEntry ? 0 : 30000;
+        
+        if (now - lastSignalTime > cooldown) {
+            if (typeof displaySignal === 'function') displaySignal(signal);
+            sendTelegramMessage(signal);
+            
+            if (isEntry) {
+                activeSignal = signal;
+                currentPosition = signal.positionType;
+                entryPrice = signal.price;
+            }
+            
+            lastSignal = signal.type;
+            lastSignalTime = now;
+        }
     }
     
-    // Запоминаем текущие значения
     lastAnalysisPrice = last.close;
     lastAnalysisRSI = rsi;
-    
-    // Обновляем прогноз
-    updateForecast(last, rsi, sma20, sma50, levels);
 }
 
 function generateSignal(rsi, sma20, sma50, last, levels) {
@@ -725,8 +721,18 @@ function updateSystemStatus(isReal = false, isFallback = false) {
 function updatePrice(newPrice) {
     if (currentData.length === 0) return;
     
-    // Обновляем цену на странице
-    updatePriceDisplay(newPrice);
+    // 1. МГНОВЕННОЕ ОБНОВЛЕНИЕ ЦЕНЫ НА ЭКРАНЕ
+    if (typeof updatePriceDisplay === 'function') {
+        updatePriceDisplay(newPrice);
+    }
+    
+    // 2. ПРОВЕРКА ЦЕЛИ (миллисекунды)
+    if (activeSignal) {
+        checkTargetReached(newPrice);
+    }
+    
+    // 3. АНАЛИЗ ПРИ КАЖДОМ ТИКЕ
+    analyzeMarket();
     
     const lastCandle = currentData[currentData.length - 1];
     const now = Math.floor(Date.now() / 1000);
@@ -761,27 +767,44 @@ function updatePrice(newPrice) {
 }
 
 function checkTargetReached(currentPrice) {
-    if (!activeSignal || !activeSignal.target) return;
+    if (!activeSignal) return;
+    
+    const isLong = currentPosition === 'long';
+    const target = activeSignal.target;
+    const stop = activeSignal.stop;
     
     let reached = false;
-    
-    if (activeSignal.type === 'BUY' && currentPrice >= activeSignal.target) {
-        reached = true;
-    } else if (activeSignal.type === 'SELL' && currentPrice <= activeSignal.target) {
-        reached = true;
+    if (isLong) {
+        if (currentPrice >= target || currentPrice <= stop) reached = true;
+    } else {
+        if (currentPrice <= target || currentPrice >= stop) reached = true;
     }
     
     if (reached) {
-        const profit = ((currentPrice - activeSignal.entryPrice) / activeSignal.entryPrice * 100).toFixed(2);
-        console.log(`\n🎉 ЦЕЛЬ ДОСТИГНУТА! Прибыль: ${profit}%\n`);
+        const profit = isLong ? 
+            ((currentPrice - entryPrice) / entryPrice * 100).toFixed(2) : 
+            ((entryPrice - currentPrice) / entryPrice * 100).toFixed(2);
         
-        // Сбрасываем активный сигнал и время, чтобы разрешить немедленное обновление
+        const exitSignal = {
+            type: profit >= 0 ? 'ФИКСИРУЕМ ПРИБЫЛЬ 💰' : 'ЗАКРЫТЬ (STOP) ⚠️',
+            price: currentPrice,
+            profit: profit,
+            action: 'EXIT',
+            reason: profit >= 0 ? `Профит: +${profit}%` : `Убыток: ${profit}%`
+        };
+
+        // Мгновенный сброс
         activeSignal = null;
+        currentPosition = null;
+        entryPrice = null;
         lastSignal = null;
-        lastSignalTime = 0; 
+        lastSignalTime = Date.now();
+
+        if (typeof displaySignal === 'function') displaySignal(exitSignal);
+        sendTelegramMessage(exitSignal);
         
-        // Немедленно запускаем новый анализ для поиска следующей точки
-        analyzeMarket();
+        // Сразу ищем новый вход
+        setTimeout(analyzeMarket, 1000);
     }
 }
 
