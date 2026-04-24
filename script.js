@@ -676,20 +676,24 @@ function updatePriceDisplay(newPrice) {
     
     if (!priceElement) return;
     
-    // Убедимся что цена это число и правильно форматируем
     const formattedPrice = parseFloat(newPrice).toFixed(2);
     const oldPrice = parseFloat(priceElement.textContent.replace('$', '')) || newPrice;
-    const change = ((newPrice - oldPrice) / oldPrice * 100).toFixed(2);
     
+    // Плавное, но мгновенное обновление текста (без анимаций задержки)
     priceElement.textContent = `$${formattedPrice}`;
-    priceElement.style.color = newPrice >= oldPrice ? 'var(--success)' : 'var(--danger)';
     
-    if (changeElement) {
-        changeElement.textContent = `${change >= 0 ? '+' : ''}${change}%`;
-        changeElement.style.color = change >= 0 ? 'var(--success)' : 'var(--danger)';
+    if (newPrice > oldPrice) {
+        priceElement.style.color = '#00ff88'; 
+    } else if (newPrice < oldPrice) {
+        priceElement.style.color = '#ff3333'; 
     }
     
-    console.log(`💰 Цена обновлена: $${formattedPrice} (изменение: ${change}%)`);
+    if (changeElement && currentData.length > 0) {
+        const startPrice = currentData[0].open;
+        const change = ((newPrice - startPrice) / startPrice * 100).toFixed(2);
+        changeElement.textContent = `${change >= 0 ? '+' : ''}${change}%`;
+        changeElement.style.color = change >= 0 ? '#00ff88' : '#ff3333';
+    }
 }
 
 function updateSystemStatus(isReal = false, isFallback = false) {
@@ -724,7 +728,12 @@ function updateSystemStatus(isReal = false, isFallback = false) {
 function updatePrice(newPrice) {
     if (currentData.length === 0) return;
     
-    // Обновляем цену на странице
+    // Проверяем достижение цели
+    if (activeSignal) {
+        checkTargetReached(newPrice);
+    }
+    
+    // 1. МГНОВЕННОЕ ОБНОВЛЕНИЕ ЦЕНЫ НА ЭКРАНЕ (как в MetaTrader)
     updatePriceDisplay(newPrice);
     
     const lastCandle = currentData[currentData.length - 1];
@@ -762,42 +771,53 @@ function updatePrice(newPrice) {
 function checkTargetReached(currentPrice) {
     if (!activeSignal || !activeSignal.target) return;
     
+    const isLong = activeSignal.positionType === 'long';
+    const isShort = activeSignal.positionType === 'short';
+    
     let reached = false;
     
-    if (activeSignal.type === 'BUY' && currentPrice >= activeSignal.target) {
-        reached = true;
-    } else if (activeSignal.type === 'SELL' && currentPrice <= activeSignal.target) {
-        reached = true;
+    // Проверка условий достижения цели или стопа
+    if (isLong) {
+        if (currentPrice >= activeSignal.target || currentPrice <= activeSignal.stop) {
+            reached = true;
+        }
+    } else if (isShort) {
+        if (currentPrice <= activeSignal.target || currentPrice >= activeSignal.stop) {
+            reached = true;
+        }
     }
     
     if (reached) {
-        const profit = ((currentPrice - activeSignal.entryPrice) / activeSignal.entryPrice * 100).toFixed(2);
+        const entry = activeSignal.entryPrice;
+        const profit = isLong ? 
+            ((currentPrice - entry) / entry * 100).toFixed(2) : 
+            ((entry - currentPrice) / entry * 100).toFixed(2);
         
-        // 1. Срочно отправляем уведомление о закрытии
+        console.log(`\n🎯 ТРИГГЕР: Цена ${currentPrice} достигла уровня в сделке ${activeSignal.type}`);
+        
+        // 1. Формируем объект для уведомления
         const exitSignal = {
-            type: activeSignal.positionType === 'long' ? 'ЗАКРЫТЬ BUY 💰' : 'ЗАКРЫТЬ SELL 💰',
+            type: profit >= 0 ? 'ФИКСИРУЕМ ПРИБЫЛЬ 💰' : 'ЗАКРЫТЬ В УБЫТОК ⚠️',
             price: currentPrice,
             profit: profit,
             action: 'EXIT',
-            reason: `Цель достигнута. Прибыль: ${profit}%`
+            reason: profit >= 0 ? `Цель достигнута. Профит: ${profit}%` : `Сработал стоп-лосс. Убыток: ${profit}%`
         };
-        displaySignal(exitSignal);
 
-        // 2. ЖЕСТКАЯ ОЧИСТКА ВСЕХ ПЕРЕМЕННЫХ
+        // 2. СНАЧАЛА полностью сбрасываем состояние
         activeSignal = null;
-        currentPosition = null;
-        entryPrice = null;
-        entryTime = null;
-        lastSignal = null;      // Сбрасываем тип, чтобы он мог дать такой же сигнал снова
-        lastSignalTime = 0;     // Сбрасываем кулдаун в ноль
+        currentPosition = null; 
+        entryPrice = null;      
+        lastSignal = null;      
+        lastSignalTime = 0;     
         
-        console.log("✅ Сделка закрыта. Система полностью очищена и готова к новому циклу.");
-
-        // 3. ПРИНУДИТЕЛЬНЫЙ ПЕРЕЗАПУСК АНАЛИЗА ЧЕРЕЗ 1 СЕКУНДУ
+        // 3. ОБНОВЛЯЕМ ИНТЕРФЕЙС И ТЕЛЕГРАМ
+        displaySignal(exitSignal);
+        
+        // 4. Мгновенно запускаем новый анализ
         setTimeout(() => {
-            console.log("🔄 Запуск нового поиска сигналов...");
             analyzeMarket();
-        }, 1000);
+        }, 100);
     }
 }
 
