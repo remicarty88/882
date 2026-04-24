@@ -151,36 +151,38 @@ function analyzeMarket() {
     const priceChange = lastAnalysisPrice ? Math.abs(last.close - lastAnalysisPrice) : 0;
     const rsiChange = lastAnalysisRSI ? Math.abs(rsi - lastAnalysisRSI) : 0;
     
-    // Анализируем только если:
-    // 1. Первый анализ
-    // 2. Цена изменилась (хотя бы на $0.1 для скальпинга)
-    // 3. RSI изменился
-    // 4. Прошел минимальный интервал (10 секунд)
     const now = Date.now();
-    const significantChange = !lastAnalysisPrice || 
-                             priceChange > 0.1 || 
-                             rsiChange > 0.1 || 
-                             (now - lastSignalTime > 10000);
+    // 1. Анализируем если цена скакнула на $0.3 или RSI на 0.5 (реальные скачки)
+    // 2. Или если прошло 2 минуты с последнего сообщения (регулярное обновление)
+    const isSignificantJump = priceChange > 0.3 || rsiChange > 0.5;
+    const isTimeUpdate = (now - lastSignalTime > 120000);
     
-    if (!significantChange) {
-        return; // Пропускаем анализ - нет значимых изменений
+    if (!isSignificantJump && !isTimeUpdate && !activeSignal) {
+        return; 
     }
     
-    console.log(`🔍 АНАЛИЗ: Цена ${last.close.toFixed(2)} (изменение: ${priceChange.toFixed(2)}), RSI: ${rsi.toFixed(1)} (изменение: ${rsiChange.toFixed(1)})`);
+    console.log(`🔍 АНАЛИЗ: Цена ${last.close.toFixed(2)} (изменение: ${priceChange.toFixed(2)}), RSI: ${rsi.toFixed(1)}`);
     
     // Определяем сигнал
     const signal = generateSignal(rsi, sma20, sma50, last, levels);
     
     if (signal) {
-        // Защита от флуда: не слать одинаковые прогнозы чаще чем раз в 3 минуты
-        if (lastSignal === signal.type && (now - lastSignalTime < 180000) && signal.action === 'WAIT') {
-            return;
-        }
+        // Отправляем в Telegram только если:
+        // - Это новый тип сигнала (был ВХОД, стал ВЫХОД)
+        // - Или это прогноз WAIT, но прошло 2 минуты (чтобы не флудить)
+        // - Или если это ВХОД (всегда отправляем сразу)
         
-        displaySignal(signal);
-        activeSignal = signal;
-        lastSignal = signal.type;
-        lastSignalTime = Date.now();
+        const isEntry = signal.action === 'ENTRY';
+        const isExit = signal.action === 'EXIT';
+        const isNewType = lastSignal !== signal.type;
+        const isCooldownOver = (now - lastSignalTime > 120000);
+
+        if (isEntry || isExit || (isNewType && isCooldownOver) || isCooldownOver) {
+            displaySignal(signal);
+            activeSignal = signal;
+            lastSignal = signal.type;
+            lastSignalTime = now;
+        }
     }
     
     // Запоминаем текущие значения
