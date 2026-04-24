@@ -153,14 +153,14 @@ function analyzeMarket() {
     
     // Анализируем только если:
     // 1. Первый анализ
-    // 2. Цена изменилась значительно (> $2)
-    // 3. RSI изменился значительно (> 2 пункта)
+    // 2. Цена изменилась значительно (> $0.5)
+    // 3. RSI изменился значительно (> 0.5 пункта)
     // 4. Прошел минимальный интервал (30 секунд)
     const now = Date.now();
     const significantChange = !lastAnalysisPrice || 
-                             priceChange > 2 || 
-                             rsiChange > 2 || 
-                             (now - lastSignalTime > 60000);
+                             priceChange > 0.5 || 
+                             rsiChange > 0.5 || 
+                             (now - lastSignalTime > 30000);
     
     if (!significantChange) {
         return; // Пропускаем анализ - нет значимых изменений
@@ -189,34 +189,33 @@ function analyzeMarket() {
 function generateSignal(rsi, sma20, sma50, last, levels) {
     const now = Date.now();
     
-    // Cooldown для защиты (1 минута)
-    if (now - lastSignalTime < 60000) return null;
+    // Cooldown для защиты (30 секунд)
+    if (now - lastSignalTime < 30000) return null;
 
-    // СТРОГИЕ ПАРАМЕТРЫ ДЛЯ БЕТОННОГО ВХОДА
-    const isBullTrend = last.close > sma20 && sma20 > sma50; // Цена выше средних
-    const isBearTrend = last.close < sma20 && sma20 < sma50; // Цена ниже средних
+    // УСЛОВИЯ ДЛЯ ВХОДА (Менее строгие)
+    const isBullTrend = last.close > sma20; // Упростили тренд
+    const isBearTrend = last.close < sma20; 
     
-    // RSI должен быть экстремальным для подтверждения силы
-    const rsiStrongBullish = rsi < 35; 
-    const rsiStrongBearish = rsi > 65; 
+    // RSI границы расширены
+    const rsiBullish = rsi < 45; 
+    const rsiBearish = rsi > 55; 
 
-    // Защита от "падающего ножа" (смотрим на последнюю свечу)
+    // Защита от "падающего ножа" (сделали мягче)
     const lastCandleBody = Math.abs(last.close - last.open);
-    const isPriceStalled = lastCandleBody < 2; // Цена замедлилась (хорошо для разворота)
+    const isPriceStalled = lastCandleBody < 5; 
 
     // ==========================================
-    // БЕТОННАЯ ПОКУПКА (LONG)
-    // Условия: Тренд вверх + RSI внизу + Цена перестала падать
+    // ПОКУПКА (LONG)
     // ==========================================
-    if (!currentPosition && isBullTrend && rsiStrongBullish && isPriceStalled) {
+    if (!currentPosition && isBullTrend && rsiBullish && isPriceStalled) {
         return {
-            type: 'БЕТОННАЯ ПОКУПКА 🟢',
+            type: 'ПОКУПКА 🟢',
             price: last.close,
             entryPrice: last.close,
             target: levels.resistance,
-            stop: last.close - 5, // Короткий стоп на $5 ниже
-            confidence: 98,
-            reason: `ТРЕНД ПОДТВЕРЖДЕН | RSI: ${rsi.toFixed(1)} | ЦЕНА ЗАМЕДЛИЛАСЬ ✅`,
+            stop: last.close - 10, 
+            confidence: 85,
+            reason: `ТРЕНД + RSI: ${rsi.toFixed(1)} | ХОРОШАЯ ТОЧКА ✅`,
             action: 'ENTRY',
             positionType: 'long',
             entryNow: true
@@ -224,18 +223,17 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     }
 
     // ==========================================
-    // БЕТОННАЯ ПРОДАЖА (SHORT)
-    // Условия: Тренд вниз + RSI вверху + Цена перестала расти
+    // ПРОДАЖА (SHORT)
     // ==========================================
-    if (!currentPosition && isBearTrend && rsiStrongBearish && isPriceStalled) {
+    if (!currentPosition && isBearTrend && rsiBearish && isPriceStalled) {
         return {
-            type: 'БЕТОННАЯ ПРОДАЖА 🔴',
+            type: 'ПРОДАЖА 🔴',
             price: last.close,
             entryPrice: last.close,
             target: levels.support,
-            stop: last.close + 5, // Короткий стоп на $5 выше
-            confidence: 98,
-            reason: `ТРЕНД ПОДТВЕРЖДЕН | RSI: ${rsi.toFixed(1)} | ЦЕНА ЗАМЕДЛИЛАСЬ ✅`,
+            stop: last.close + 10,
+            confidence: 85,
+            reason: `ТРЕНД + RSI: ${rsi.toFixed(1)} | ХОРОШАЯ ТОЧКА ✅`,
             action: 'ENTRY',
             positionType: 'short',
             entryNow: true
@@ -260,7 +258,7 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
             };
         }
         // СТОП ЛОСС
-        if (last.close <= entryPrice * 0.995) {
+        if (last.close <= entryPrice - 10) {
             return {
                 type: 'ЗАКРЫТЬ ПОКУПКУ ⚠️',
                 price: last.close,
@@ -276,7 +274,7 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
         const profit = ((entryPrice - last.close) / entryPrice * 100).toFixed(2);
         
         // ТЕЙК ПРОФИТ
-        if (last.close <= levels.support || rsi < 30) {
+        if (last.close <= levels.support || rsi < 40) {
             return {
                 type: 'ФИКСИРУЕМ ПРИБЫЛЬ 💰',
                 price: last.close,
@@ -287,7 +285,7 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
             };
         }
         // СТОП ЛОСС
-        if (last.close >= entryPrice * 1.005) {
+        if (last.close >= entryPrice + 10) {
             return {
                 type: 'ЗАКРЫТЬ ПРОДАЖУ ⚠️',
                 price: last.close,
@@ -300,12 +298,12 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     }
 
     // Если ничего не подошло
-    if (!currentPosition && lastSignal !== 'ЖДАТЬ БЕТОННЫЙ ВХОД') {
+    if (!currentPosition && lastSignal !== 'ЖДАТЬ ВХОДА') {
         return {
-            type: 'ЖДАТЬ БЕТОННЫЙ ВХОД ⏳',
+            type: 'ЖДАТЬ ВХОДА ⏳',
             price: last.close,
             confidence: 50,
-            reason: 'АНАЛИЗ РЫНКА: ИЩЕМ ИДЕАЛЬНУЮ ТОЧКУ...',
+            reason: 'РЫНОК В ДВИЖЕНИИ: ИЩЕМ ТОЧКУ...',
             action: 'WAIT'
         };
     }
@@ -457,9 +455,9 @@ async function sendTelegramMessage(signal) {
 
     let text = "";
     if (signal.action === 'ENTRY') {
-        text = `🎯 *БЕТОННЫЙ СИГНАЛ!*\n\n` +
-               `*Действие:* ${signal.type}\n` +
-               `*Вход:* $${signal.price.toFixed(2)}\n` +
+        text = `🎯 *СИГНАЛ ВХОДА!*\n\n` +
+               `*Направление:* ${signal.type}\n` +
+               `*Цена:* $${signal.price.toFixed(2)}\n` +
                `*Цель (TP):* $${signal.target.toFixed(2)}\n` +
                `*Стоп (SL):* $${signal.stop.toFixed(2)}\n` +
                `*Уверенность:* ${signal.confidence}%\n\n` +
@@ -470,6 +468,11 @@ async function sendTelegramMessage(signal) {
                `*Результат:* ${signal.type}\n` +
                `*Цена выхода:* $${signal.price.toFixed(2)}\n` +
                `*Прибыль/Убыток:* ${signal.profit}%`;
+    } else if (signal.action === 'WAIT') {
+        text = `⏳ *ОЖИДАНИЕ СИГНАЛА*\n\n` +
+               `*Текущая цена:* $${signal.price.toFixed(2)}\n` +
+               `*Статус:* ${signal.reason}\n` +
+               `*Уверенность:* ${signal.confidence}%`;
     }
 
     if (!text) return;
@@ -838,3 +841,4 @@ if (typeof module !== 'undefined' && module.exports) {
         calculateSMA
     };
 }
+
