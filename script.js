@@ -21,6 +21,50 @@ let entryPrice = null;
 let entryTime = null;
 let lastAnalysisPrice = null; // Запоминаем цену последнего анализа
 let lastAnalysisRSI = null; // Запоминаем RSI последнего анализа
+let lastAnalysisTime = 0; // Запоминаем время последнего анализа
+
+// Функции для сохранения состояния (для защиты от перезагрузки)
+function saveState() {
+    if (typeof localStorage === 'undefined') return;
+    const state = {
+        activeSignal,
+        currentPosition,
+        entryPrice,
+        entryTime,
+        lastSignal,
+        lastSignalTime
+    };
+    localStorage.setItem('gold_alpha_state', JSON.stringify(state));
+}
+
+function loadState() {
+    if (typeof localStorage === 'undefined') return;
+    const saved = localStorage.getItem('gold_alpha_state');
+    if (saved) {
+        const state = JSON.parse(saved);
+        activeSignal = state.activeSignal;
+        currentPosition = state.currentPosition;
+        entryPrice = state.entryPrice;
+        entryTime = state.entryTime;
+        lastSignal = state.lastSignal;
+        lastSignalTime = state.lastSignalTime;
+        console.log('Состояние успешно восстановлено из памяти');
+    }
+}
+
+loadState(); // Загружаем сохраненное состояние при запуске
+
+// Настройки стратегии
+const STRATEGY = {
+    EMA_FAST: 9,
+    EMA_SLOW: 21,
+    RSI_PERIOD: 14,
+    RSI_OVERBOUGHT: 70,
+    RSI_OVERSOLD: 30,
+    ATR_PERIOD: 14,
+    RISK_REWARD: 2.0, // Соотношение риск/прибыль
+    SCALP_PROFIT_TARGET: 1.5, // Минимальный профит в пунктах для золота
+};
 
 // ==========================================
 // ОСНОВНЫЕ ФУНКЦИИ
@@ -98,6 +142,23 @@ function initWebSocket() {
     }
 
     socket = new WebSocket(wsUrl);
+    
+    // Пинг для поддержания связи
+    if (typeof window !== 'undefined') {
+        if (window._wsHeartbeat) clearInterval(window._wsHeartbeat);
+        window._wsHeartbeat = setInterval(() => {
+            if (socket.readyState === (WebSocket.OPEN || 1)) {
+                socket.send(JSON.stringify({ action: "heartbeat" }));
+            }
+        }, 10000);
+    } else {
+        if (global._wsHeartbeat) clearInterval(global._wsHeartbeat);
+        global._wsHeartbeat = setInterval(() => {
+            if (socket.readyState === (WebSocket.OPEN || 1)) {
+                socket.send(JSON.stringify({ action: "heartbeat" }));
+            }
+        }, 10000);
+    }
     
     socket.onopen = () => {
         console.log('✅ WebSocket подключен успешно');
@@ -192,30 +253,41 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     // Cooldown для скальпинга (10 секунд)
     if (now - lastSignalTime < 10000) return null;
 
-    // ПАРАМЕТРЫ ДЛЯ СКАЛЬПИНГА (Мгновенная реакция)
-    const isBullTrend = last.close > calculateSMA(10); // Быстрая скользящая
-    const isBearTrend = last.close < calculateSMA(10); 
+    const emaFast = calculateEMA(STRATEGY.EMA_FAST);
+    const emaSlow = calculateEMA(STRATEGY.EMA_SLOW);
+    const atr = calculateATR(STRATEGY.ATR_PERIOD);
+    const bb = calculateBollingerBands(20, 2);
     
-    // RSI для скальпинга (очень чувствительный)
-    const rsiBullish = rsi < 48; 
-    const rsiBearish = rsi > 52; 
+    if (!bb) return null;
 
-    // Минимальное замедление цены для скальп-входа
-    const lastCandleBody = Math.abs(last.close - last.open);
-    const isPriceStalled = lastCandleBody < 1.5; 
+    // ПАРАМЕТРЫ ДЛЯ СКАЛЬПИНГА (Мгновенная реакция)
+    const isBullTrend = last.close > emaSlow && emaFast > emaSlow; 
+    const isBearTrend = last.close < emaSlow && emaFast < emaSlow; 
+    
+    // RSI для скальпинга
+    const rsiBullish = rsi < 45; 
+    const rsiBearish = rsi > 55; 
+
+    // Фильтр волатильности через ATR
+    const minVolatility = 0.5; // Золото должно двигаться
+    if (atr < minVolatility) return null;
+
+    // Динамический стоп-лосс и тейк-профит на основе ATR
+    const slDistance = atr * 1.5;
+    const tpDistance = slDistance * STRATEGY.RISK_REWARD;
 
     // ==========================================
     // СКАЛЬП-ПОКУПКА (LONG)
     // ==========================================
-    if (!currentPosition && isBullTrend && rsiBullish && isPriceStalled) {
+    if (!currentPosition && isBullTrend && rsiBullish && last.close <= bb.lower) {
         return {
-            type: 'СКАЛЬП-ВХОД: BUY 🟢',
+            type: '🔥 КРУТОЙ ВХОД: BUY 🟢',
             price: last.close,
             entryPrice: last.close,
-            target: last.close + 2.5, // Цель $2.5 (скальпинг)
-            stop: last.close - 2.5,   // Стоп $2.5
-            confidence: 90,
-            reason: `SCALP: Тренд + RSI ${rsi.toFixed(1)} | Быстрый вход`,
+            target: last.close + tpDistance,
+            stop: last.close - slDistance,
+            confidence: 95,
+            reason: `TREND + RSI ${rsi.toFixed(1)} + BB Bottom. ATR Vol: ${atr.toFixed(2)}`,
             action: 'ENTRY',
             positionType: 'long',
             entryNow: true
@@ -225,15 +297,15 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     // ==========================================
     // СКАЛЬП-ПРОДАЖА (SHORT)
     // ==========================================
-    if (!currentPosition && isBearTrend && rsiBearish && isPriceStalled) {
+    if (!currentPosition && isBearTrend && rsiBearish && last.close >= bb.upper) {
         return {
-            type: 'СКАЛЬП-ВХОД: SELL 🔴',
+            type: '🔥 КРУТОЙ ВХОД: SELL 🔴',
             price: last.close,
             entryPrice: last.close,
-            target: last.close - 2.5, // Цель $2.5
-            stop: last.close + 2.5,   // Стоп $2.5
-            confidence: 90,
-            reason: `SCALP: Тренд + RSI ${rsi.toFixed(1)} | Быстрый вход`,
+            target: last.close - tpDistance,
+            stop: last.close + slDistance,
+            confidence: 95,
+            reason: `TREND + RSI ${rsi.toFixed(1)} + BB Top. ATR Vol: ${atr.toFixed(2)}`,
             action: 'ENTRY',
             positionType: 'short',
             entryNow: true
@@ -247,23 +319,23 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
         const profit = ((last.close - entryPrice) / entryPrice * 100).toFixed(2);
         
         // ТЕЙК ПРОФИТ (Скальпинг)
-        if (last.close >= entryPrice + 2.5 || rsi > 65) {
+        if (last.close >= activeSignal.target || rsi > 70) {
             return {
-                type: 'ФИКСИРУЕМ СКALP 💰',
+                type: 'ФИКСИРУЕМ ПРИБЫЛЬ 💰',
                 price: last.close,
                 confidence: 100,
-                reason: `ЦЕЛЬ ДОСТИГНУТА (+$2.5). ПРИБЫЛЬ: ${profit}%`,
+                reason: `ЦЕЛЬ ДОСТИГНУТА. ПРИБЫЛЬ: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
         }
-        // СТОП ЛОСС (Короткий)
-        if (last.close <= entryPrice - 2.5) {
+        // СТОП ЛОСС
+        if (last.close <= activeSignal.stop) {
             return {
-                type: 'ЗАКРЫТЬ СКALP ⚠️',
+                type: 'ЗАКРЫТЬ (STOP) ⚠️',
                 price: last.close,
                 confidence: 100,
-                reason: `СТОП-ЛОСС (-$2.5). УБЫТОК: ${profit}%`,
+                reason: `СТОП-ЛОСС. УБЫТОК: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
@@ -274,41 +346,27 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
         const profit = ((entryPrice - last.close) / entryPrice * 100).toFixed(2);
         
         // ТЕЙК ПРОФИТ (Скальпинг)
-        if (last.close <= entryPrice - 2.5 || rsi < 35) {
+        if (last.close <= activeSignal.target || rsi < 30) {
             return {
-                type: 'ФИКСИРУЕМ SCALP 💰',
+                type: 'ФИКСИРУЕМ ПРИБЫЛЬ 💰',
                 price: last.close,
                 confidence: 100,
-                reason: `ЦЕЛЬ ДОСТИГНУТА (+$2.5). ПРИБЫЛЬ: ${profit}%`,
+                reason: `ЦЕЛЬ ДОСТИГНУТА. ПРИБЫЛЬ: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
         }
         // СТОП ЛОСС
-        if (last.close >= entryPrice + 2.5) {
+        if (last.close >= activeSignal.stop) {
             return {
-                type: 'ЗАКРЫТЬ SCALP ⚠️',
+                type: 'ЗАКРЫТЬ (STOP) ⚠️',
                 price: last.close,
                 confidence: 100,
-                reason: `СТОП-ЛОСС (-$2.5). УБЫТОК: ${profit}%`,
+                reason: `СТОП-ЛОСС. УБЫТОК: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
         }
-    }
-
-    // Если ничего не подошло (Генерируем прогноз на основе текущего тренда)
-    if (!currentPosition) {
-        const isUp = last.close > sma20;
-        return {
-            type: isUp ? 'ПРОГНОЗ: РОСТ 📈' : 'ПРОГНОЗ: ПАДЕНИЕ 📉',
-            price: last.close,
-            confidence: 75,
-            reason: isUp ? `Цена выше SMA20, тренд бычий. RSI: ${rsi.toFixed(1)}` : `Цена ниже SMA20, тренд медвежий. RSI: ${rsi.toFixed(1)}`,
-            action: 'WAIT',
-            target: isUp ? levels.resistance : levels.support,
-            stop: isUp ? last.close - 15 : last.close + 15
-        };
     }
 
     return null;
@@ -336,14 +394,42 @@ function calculateRSI(period = 14) {
     return 100 - (100 / (1 + rs));
 }
 
-function calculateSMA(period) {
-    if (currentData.length < period) return currentData[currentData.length - 1].close;
-    
-    let sum = 0;
-    for (let i = currentData.length - period; i < currentData.length; i++) {
-        sum += currentData[i].close;
+function calculateEMA(period, data = currentData) {
+    if (data.length < period) return data[data.length - 1].close;
+    const k = 2 / (period + 1);
+    let ema = data[data.length - period].close;
+    for (let i = data.length - period + 1; i < data.length; i++) {
+        ema = data[i].close * k + ema * (1 - k);
     }
-    return sum / period;
+    return ema;
+}
+
+function calculateATR(period = 14) {
+    if (currentData.length < period + 1) return 1.5;
+    let trSum = 0;
+    for (let i = currentData.length - period; i < currentData.length; i++) {
+        const h = currentData[i].high;
+        const l = currentData[i].low;
+        const pc = currentData[i - 1].close;
+        const tr = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+        trSum += tr;
+    }
+    return trSum / period;
+}
+
+function calculateBollingerBands(period = 20, stdDev = 2) {
+    if (currentData.length < period) return null;
+    const sma = calculateSMA(period);
+    let variance = 0;
+    for (let i = currentData.length - period; i < currentData.length; i++) {
+        variance += Math.pow(currentData[i].close - sma, 2);
+    }
+    const standardDeviation = Math.sqrt(variance / period);
+    return {
+        middle: sma,
+        upper: sma + (stdDev * standardDeviation),
+        lower: sma - (stdDev * standardDeviation)
+    };
 }
 
 function calculateLevels() {
@@ -383,13 +469,16 @@ function displaySignal(signal) {
     if (signal.action === 'ENTRY') {
         // Проверяем нужно ли входить сейчас или ждать
         if (signal.entryNow) {
+            // Мгновенный вход
+            activeSignal = signal;
             currentPosition = signal.positionType;
-            entryPrice = signal.entryPrice;
+            entryPrice = signal.price;
             entryTime = Date.now();
-            console.log(`🟢 ВХОДИМ СЕЙЧАС! ${currentPosition.toUpperCase()} по цене $${entryPrice.toFixed(2)}`);
+            saveState(); // Сохраняем состояние при входе в сделку
+            console.log(` ВХОДИМ СЕЙЧАС! ${currentPosition.toUpperCase()} по цене $${entryPrice.toFixed(2)}`);
             showNotification('ВХОДИТЬ В ПОЗИЦИЮ СЕЙЧАС!', `${signal.type} по $${entryPrice.toFixed(2)}`, 'success');
         } else {
-            console.log(`⏳ ЖДЕМ ТОЧКУ ВХОДА: $${signal.entryPrice.toFixed(2)}`);
+            console.log(` ЖДЕМ ТОЧКУ ВХОДА: $${signal.entryPrice.toFixed(2)}`);
             showNotification('ЖДЕМ ТОЧКУ ВХОДА!', `Цена входа: $${signal.entryPrice.toFixed(2)}`, 'warning');
         }
     } else if (signal.action === 'EXIT') {
@@ -458,26 +547,31 @@ async function sendTelegramMessage(signal) {
 
     let text = "";
     if (signal.action === 'ENTRY') {
-        text = `🎯 *СИГНАЛ ВХОДА!*\n\n` +
+        const targetDist = signal.target && signal.price ? Math.abs(signal.target - signal.price).toFixed(2) : "1.50";
+        
+        text = `🎯 *БЫСТРЫЙ ВХОД!* (Мгновенно)\n\n` +
                `*Направление:* ${signal.type}\n` +
-               `*Цена:* $${signal.price.toFixed(2)}\n` +
-               `*Цель (TP):* $${signal.target.toFixed(2)}\n` +
-               `*Стоп (SL):* $${signal.stop.toFixed(2)}\n` +
-               `*Уверенность:* ${signal.confidence}%\n\n` +
-               `📝 *Анализ:* ${signal.reason}`;
+               `*Входи по рынку сейчас!*\n` +
+               `*Тейк-профит:* +$${targetDist}\n\n` +
+               `⚠️ *Не входи, если цена в МТ уже ушла на $0.5 от ${signal.price ? signal.price.toFixed(2) : 'текущей'}*`;
     } else if (signal.action === 'EXIT') {
         const profitEmoji = signal.profit > 0 ? '💰' : '⚠️';
+        const priceDisplay = signal.price ? signal.price.toFixed(2) : 'рыночной';
         text = `${profitEmoji} *ЗАКРЫТИЕ ПОЗИЦИИ*\n\n` +
                `*Результат:* ${signal.type}\n` +
-               `*Цена выхода:* $${signal.price.toFixed(2)}\n` +
-               `*Прибыль/Убыток:* ${signal.profit}%`;
+               `*Цена выхода:* $${priceDisplay}\n` +
+               `*Прибыль/Убыток:* ${signal.profit || 0}%`;
     } else if (signal.action === 'WAIT') {
         const trendEmoji = signal.type.includes('РОСТ') ? '📈' : '📉';
+        const currentPrice = signal.price ? signal.price.toFixed(2) : '---';
+        const targetPrice = signal.target ? signal.target.toFixed(2) : '---';
+        const confidence = signal.confidence || 0;
+        
         text = `${trendEmoji} *ТЕКУЩИЙ ПРОГНОЗ*\n\n` +
                `*Направление:* ${signal.type}\n` +
-               `*Текущая цена:* $${signal.price.toFixed(2)}\n` +
-               `*Ожидаемая цель:* $${signal.target.toFixed(2)}\n` +
-               `*Уверенность:* ${signal.confidence}%\n\n` +
+               `*Текущая цена:* $${currentPrice}\n` +
+               `*Ожидаемая цель:* $${targetPrice}\n` +
+               `*Уверенность:* ${confidence}%\n\n` +
                `📝 *Анализ:* ${signal.reason}`;
     }
 
@@ -485,7 +579,7 @@ async function sendTelegramMessage(signal) {
 
     try {
         const url = `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`;
-        await fetch(url, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -494,6 +588,9 @@ async function sendTelegramMessage(signal) {
                 parse_mode: 'Markdown'
             })
         });
+        if (!response.ok) {
+            console.error('❌ Telegram API error:', await response.text());
+        }
     } catch (e) {
         console.error('❌ Ошибка Telegram:', e);
     }
@@ -790,6 +887,7 @@ function checkTargetReached(currentPrice) {
         entryPrice = null;      // ВАЖНО: сбросить цену входа
         lastSignal = null;
         lastSignalTime = 0; 
+        saveState(); // Сохраняем пустое состояние после закрытия сделки
         
         // Немедленно запускаем новый анализ для поиска следующей точки
         analyzeMarket();
@@ -861,3 +959,4 @@ if (typeof module !== 'undefined' && module.exports) {
         calculateSMA
     };
 }
+
