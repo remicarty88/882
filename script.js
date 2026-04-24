@@ -99,43 +99,73 @@ async function fetchMarketData() {
 }
 
 function initWebSocket() {
-    console.log('🔗 Запуск WebSocket для миллисекундных обновлений...');
-    const wsUrl = `wss://ws.twelvedata.com/v1/quotes?apikey=${API_KEY}`;
+    console.log('🔗 Попытка подключения к WebSocket (Direct Real-time)...');
     
+    // Очистка старого сокета
     if (socket) {
-        try { socket.close(); } catch(e) {}
+        try {
+            socket.onopen = null;
+            socket.onmessage = null;
+            socket.onclose = null;
+            socket.onerror = null;
+            socket.close();
+        } catch(e) {}
     }
 
-    socket = new WebSocketLib(wsUrl);
+    // Правильный URL для WebSocket Twelve Data (миллисекундные котировки)
+    const wsUrl = `wss://ws.twelvedata.com/v1/quotes?apikey=${API_KEY}`;
     
-    socket.onopen = () => {
-        console.log('✅ ПОДКЛЮЧЕНО К БИРЖЕ (REAL-TIME)');
-        socket.send(JSON.stringify({
-            action: "subscribe",
-            params: { symbols: SYMBOL }
-        }));
-    };
-    
-    socket.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (data.event === 'price' && data.price) {
-                const price = parseFloat(data.price);
-                updatePrice(price);
+    try {
+        socket = new WebSocketLib(wsUrl);
+
+        socket.onopen = () => {
+            console.log('✅ WebSocket: ПОДКЛЮЧЕНО К БИРЖЕ');
+            // Подписываемся на золото
+            socket.send(JSON.stringify({
+                action: "subscribe",
+                params: { symbols: SYMBOL }
+            }));
+            
+            // Пинг для поддержания связи
+            if (window._wsHeartbeat) clearInterval(window._wsHeartbeat);
+            window._wsHeartbeat = setInterval(() => {
+                if (socket.readyState === (WebSocketLib.OPEN || 1)) {
+                    socket.send(JSON.stringify({ action: "heartbeat" }));
+                }
+            }, 10000);
+        };
+
+        socket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                // Обработка рыночной цены
+                if (data.event === 'price' && data.price) {
+                    updatePrice(parseFloat(data.price));
+                } 
+                
+                // Проверка ошибок от сервера
+                if (data.status === 'error') {
+                    console.error('❌ WebSocket API Error:', data.message);
+                }
+            } catch (e) {
+                console.warn('⚠️ Ошибка обработки данных сокета');
             }
-        } catch (e) {
-            // Ошибка парсинга
-        }
-    };
-    
-    socket.onclose = () => {
-        console.warn('⚠️ Связь потеряна. Авто-восстановление...');
-        setTimeout(initWebSocket, 2000);
-    };
-    
-    socket.onerror = (error) => {
-        console.error('❌ Ошибка WebSocket');
-    };
+        };
+
+        socket.onclose = (event) => {
+            console.warn('⚠️ WebSocket отключен. Причина:', event.code, event.reason);
+            // Быстрое переподключение через 2 секунды
+            setTimeout(initWebSocket, 2000);
+        };
+
+        socket.onerror = (error) => {
+            console.error('❌ WebSocket Connection Error');
+        };
+    } catch (e) {
+        console.error('❌ Не удалось создать WebSocket:', e);
+        setTimeout(initWebSocket, 5000);
+    }
 }
 
 // ==========================================
@@ -454,19 +484,20 @@ async function sendTelegramMessage(signal) {
 
     let text = "";
     if (signal.action === 'ENTRY') {
-        text = `🎯 *СИГНАЛ ВХОДА!*\n\n` +
+        const targetDist = signal.target && signal.price ? Math.abs(signal.target - signal.price).toFixed(2) : "1.50";
+        
+        text = `🎯 *БЫСТРЫЙ ВХОД!* (Мгновенно)\n\n` +
                `*Направление:* ${signal.type}\n` +
-               `*Цена:* $${signal.price.toFixed(2)}\n` +
-               `*Цель (TP):* $${signal.target.toFixed(2)}\n` +
-               `*Стоп (SL):* $${signal.stop.toFixed(2)}\n` +
-               `*Уверенность:* ${signal.confidence}%\n\n` +
-               `📝 *Анализ:* ${signal.reason}`;
+               `*Входи по рынку сейчас!*\n` +
+               `*Тейк-профит:* +$${targetDist}\n\n` +
+               `⚠️ *Не входи, если цена в МТ уже ушла на $0.5 от ${signal.price ? signal.price.toFixed(2) : 'текущей'}*`;
     } else if (signal.action === 'EXIT') {
         const profitEmoji = signal.profit > 0 ? '💰' : '⚠️';
+        const priceDisplay = signal.price ? signal.price.toFixed(2) : 'рыночной';
         text = `${profitEmoji} *ЗАКРЫТИЕ ПОЗИЦИИ*\n\n` +
                `*Результат:* ${signal.type}\n` +
-               `*Цена выхода:* $${signal.price.toFixed(2)}\n` +
-               `*Прибыль/Убыток:* ${signal.profit}%`;
+               `*Цена выхода:* $${priceDisplay}\n` +
+               `*Прибыль/Убыток:* ${signal.profit || 0}%`;
     } else if (signal.action === 'WAIT') {
         const trendEmoji = signal.type.includes('РОСТ') ? '📈' : '📉';
         text = `${trendEmoji} *ТЕКУЩИЙ ПРОГНОЗ*\n\n` +
