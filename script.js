@@ -457,13 +457,15 @@ async function sendTelegramMessage(signal) {
 
     let text = "";
     if (signal.action === 'ENTRY') {
+        const targetDist = Math.abs(signal.target - signal.price).toFixed(2);
+        const stopDist = Math.abs(signal.stop - signal.price).toFixed(2);
+        
         text = `🎯 *СИГНАЛ ВХОДА!*\n\n` +
                `*Направление:* ${signal.type}\n` +
-               `*Цена:* $${signal.price.toFixed(2)}\n` +
-               `*Цель (TP):* $${signal.target.toFixed(2)}\n` +
-               `*Стоп (SL):* $${signal.stop.toFixed(2)}\n` +
-               `*Уверенность:* ${signal.confidence}%\n\n` +
-               `📝 *Анализ:* ${signal.reason}`;
+               `*Цена входа:* $${signal.price.toFixed(2)}\n` +
+               `*Цель (TP):* +$${targetDist}\n` +
+               `*Стоп (SL):* -$${stopDist}\n\n` +
+               `� *Для МТ:* Ставь Тейк +$${targetDist} от текущей цены у брокера!`;
     } else if (signal.action === 'EXIT') {
         const profitEmoji = signal.profit > 0 ? '💰' : '⚠️';
         text = `${profitEmoji} *ЗАКРЫТИЕ ПОЗИЦИИ*\n\n` +
