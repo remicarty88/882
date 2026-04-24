@@ -151,38 +151,31 @@ function analyzeMarket() {
     const priceChange = lastAnalysisPrice ? Math.abs(last.close - lastAnalysisPrice) : 0;
     const rsiChange = lastAnalysisRSI ? Math.abs(rsi - lastAnalysisRSI) : 0;
     
+    // Анализируем только если:
+    // 1. Первый анализ
+    // 2. Цена изменилась (хотя бы на $0.05 для ультра-скальпинга)
+    // 3. RSI изменился
+    // 4. Прошел минимальный интервал (5 секунд)
     const now = Date.now();
-    // 1. Анализируем если цена скакнула на $0.3 или RSI на 0.5 (реальные скачки)
-    // 2. Или если прошло 2 минуты с последнего сообщения (регулярное обновление)
-    const isSignificantJump = priceChange > 0.3 || rsiChange > 0.5;
-    const isTimeUpdate = (now - lastSignalTime > 120000);
+    const significantChange = !lastAnalysisPrice || 
+                             priceChange > 0.05 || 
+                             rsiChange > 0.1 || 
+                             (now - lastSignalTime > 5000);
     
-    if (!isSignificantJump && !isTimeUpdate && !activeSignal) {
+    if (!significantChange) {
         return; 
     }
     
-    console.log(`🔍 АНАЛИЗ: Цена ${last.close.toFixed(2)} (изменение: ${priceChange.toFixed(2)}), RSI: ${rsi.toFixed(1)}`);
+    console.log(`🔍 SCALP ANALYZER: Цена ${last.close.toFixed(2)}, RSI: ${rsi.toFixed(1)}`);
     
     // Определяем сигнал
     const signal = generateSignal(rsi, sma20, sma50, last, levels);
     
     if (signal) {
-        // Отправляем в Telegram только если:
-        // - Это новый тип сигнала (был ВХОД, стал ВЫХОД)
-        // - Или это прогноз WAIT, но прошло 2 минуты (чтобы не флудить)
-        // - Или если это ВХОД (всегда отправляем сразу)
-        
-        const isEntry = signal.action === 'ENTRY';
-        const isExit = signal.action === 'EXIT';
-        const isNewType = lastSignal !== signal.type;
-        const isCooldownOver = (now - lastSignalTime > 120000);
-
-        if (isEntry || isExit || (isNewType && isCooldownOver) || isCooldownOver) {
-            displaySignal(signal);
-            activeSignal = signal;
-            lastSignal = signal.type;
-            lastSignalTime = now;
-        }
+        displaySignal(signal);
+        activeSignal = signal;
+        lastSignal = signal.type;
+        lastSignalTime = Date.now();
     }
     
     // Запоминаем текущие значения
@@ -196,32 +189,32 @@ function analyzeMarket() {
 function generateSignal(rsi, sma20, sma50, last, levels) {
     const now = Date.now();
     
-    // Cooldown для скальпинга (10 секунд)
-    if (now - lastSignalTime < 10000) return null;
+    // Cooldown для ультра-скальпинга (5 секунд)
+    if (now - lastSignalTime < 5000) return null;
 
-    // ПАРАМЕТРЫ ДЛЯ СКАЛЬПИНГА (Мгновенная реакция)
-    const isBullTrend = last.close > calculateSMA(10); // Быстрая скользящая
-    const isBearTrend = last.close < calculateSMA(10); 
+    const sma10 = calculateSMA(10);
+    const isBullTrend = last.close > sma10;
+    const isBearTrend = last.close < sma10; 
     
-    // RSI для скальпинга (Оптимальный баланс)
-    const rsiBullish = rsi > 30 && rsi < 50; 
-    const rsiBearish = rsi > 50 && rsi < 75; 
-    // Минимальное замедление цены для скальп-входа
-    const lastCandleBody = Math.abs(last.close - last.open);
-    const isPriceStalled = lastCandleBody < 1.5; 
+    const rsiBullish = rsi < 48; 
+    const rsiBearish = rsi > 52; 
+
+    // Скальпинг параметры
+    const scalpTarget = 1.5; // Тейк-профит $1.5
+    const scalpStop = 1.5;   // Стоп-лосс $1.5
 
     // ==========================================
     // СКАЛЬП-ПОКУПКА (LONG)
     // ==========================================
-    if (!currentPosition && isBullTrend && rsiBullish && isPriceStalled) {
+    if (!currentPosition && isBullTrend && rsiBullish) {
         return {
             type: 'СКАЛЬП-ВХОД: BUY 🟢',
             price: last.close,
             entryPrice: last.close,
-            target: last.close + 2.5, // Цель $2.5 (скальпинг)
-            stop: last.close - 2.5,   // Стоп $2.5
-            confidence: 90,
-            reason: `SCALP: Тренд + RSI ${rsi.toFixed(1)} | Быстрый вход`,
+            target: last.close + scalpTarget,
+            stop: last.close - scalpStop,
+            confidence: 95,
+            reason: `ТРЕНД: РОСТ | RSI: ${rsi.toFixed(1)} | ЦЕЛЬ: +$${scalpTarget}`,
             action: 'ENTRY',
             positionType: 'long',
             entryNow: true
@@ -231,15 +224,15 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     // ==========================================
     // СКАЛЬП-ПРОДАЖА (SHORT)
     // ==========================================
-    if (!currentPosition && isBearTrend && rsiBearish && isPriceStalled) {
+    if (!currentPosition && isBearTrend && rsiBearish) {
         return {
             type: 'СКАЛЬП-ВХОД: SELL 🔴',
             price: last.close,
             entryPrice: last.close,
-            target: last.close - 2.5, // Цель $2.5
-            stop: last.close + 2.5,   // Стоп $2.5
-            confidence: 90,
-            reason: `SCALP: Тренд + RSI ${rsi.toFixed(1)} | Быстрый вход`,
+            target: last.close - scalpTarget,
+            stop: last.close + scalpStop,
+            confidence: 95,
+            reason: `ТРЕНД: ПАДЕНИЕ | RSI: ${rsi.toFixed(1)} | ЦЕЛЬ: +$${scalpTarget}`,
             action: 'ENTRY',
             positionType: 'short',
             entryNow: true
@@ -252,24 +245,24 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     if (currentPosition === 'long') {
         const profit = ((last.close - entryPrice) / entryPrice * 100).toFixed(2);
         
-        // ТЕЙК ПРОФИТ (Скальпинг)
-        if (last.close >= entryPrice + 2.5 || rsi > 65) {
+        // ТЕЙК ПРОФИТ (Ультра-Скальпинг)
+        if (last.close >= entryPrice + 1.5 || rsi > 70) {
             return {
-                type: 'ФИКСИРУЕМ СКALP 💰',
+                type: 'ФИКСИРУЕМ ПРИБЫЛЬ (SCALP) 💰',
                 price: last.close,
                 confidence: 100,
-                reason: `ЦЕЛЬ ДОСТИГНУТА (+$2.5). ПРИБЫЛЬ: ${profit}%`,
+                reason: `ЦЕЛЬ $1.5 ДОСТИГНУТА. ПРИБЫЛЬ: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
         }
-        // СТОП ЛОСС (Короткий)
-        if (last.close <= entryPrice - 2.5) {
+        // СТОП ЛОСС (Ультра-Скальпинг)
+        if (last.close <= entryPrice - 1.5) {
             return {
-                type: 'ЗАКРЫТЬ СКALP ⚠️',
+                type: 'ЗАКРЫТЬ SCALP (STOP) ⚠️',
                 price: last.close,
                 confidence: 100,
-                reason: `СТОП-ЛОСС (-$2.5). УБЫТОК: ${profit}%`,
+                reason: `СТОП-ЛОСС $1.5. УБЫТОК: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
@@ -279,24 +272,24 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     if (currentPosition === 'short') {
         const profit = ((entryPrice - last.close) / entryPrice * 100).toFixed(2);
         
-        // ТЕЙК ПРОФИТ (Скальпинг)
-        if (last.close <= entryPrice - 2.5 || rsi < 35) {
+        // ТЕЙК ПРОФИТ (Ультра-Скальпинг)
+        if (last.close <= entryPrice - 1.5 || rsi < 30) {
             return {
-                type: 'ФИКСИРУЕМ SCALP 💰',
+                type: 'ФИКСИРУЕМ ПРИБЫЛЬ (SCALP) 💰',
                 price: last.close,
                 confidence: 100,
-                reason: `ЦЕЛЬ ДОСТИГНУТА (+$2.5). ПРИБЫЛЬ: ${profit}%`,
+                reason: `ЦЕЛЬ $1.5 ДОСТИГНУТА. ПРИБЫЛЬ: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
         }
         // СТОП ЛОСС
-        if (last.close >= entryPrice + 2.5) {
+        if (last.close >= entryPrice + 1.5) {
             return {
-                type: 'ЗАКРЫТЬ SCALP ⚠️',
+                type: 'ЗАКРЫТЬ SCALP (STOP) ⚠️',
                 price: last.close,
                 confidence: 100,
-                reason: `СТОП-ЛОСС (-$2.5). УБЫТОК: ${profit}%`,
+                reason: `СТОП-ЛОСС $1.5. УБЫТОК: ${profit}%`,
                 action: 'EXIT',
                 profit: profit
             };
@@ -653,8 +646,7 @@ function addSignalToPage(signal) {
         timeHtml = `<div class="signal-time-estimate">Время до цели: ${signal.timeToTarget}</div>`;
     }
     
-        const timeToTarget = calculateTimeToTarget(signal.price, signal.target);
-        signalItem.innerHTML = `
+    signalItem.innerHTML = `
         <div class="signal-header">
             <span class="signal-type">${signal.type}</span>
             <span class="signal-time">${time}</span>
@@ -662,7 +654,7 @@ function addSignalToPage(signal) {
         <div class="signal-price">$${signal.price.toFixed(2)}</div>
         <div class="signal-reason">${signal.reason}</div>
         ${targetHtml}
-        <div class="signal-time-estimate">Время до цели: ${timeToTarget}</div>
+        ${timeHtml}
         <div class="signal-status">Активный сигнал</div>
     `;
     
@@ -782,7 +774,7 @@ function checkTargetReached(currentPrice) {
         const profit = ((currentPrice - activeSignal.entryPrice) / activeSignal.entryPrice * 100).toFixed(2);
         console.log(`\n🎉 ЦЕЛЬ ДОСТИГНУТА! Прибыль: ${profit}%\n`);
         
-        // 1. Отправляем уведомление о закрытии в UI и Telegram
+        // 1. Формируем объект для уведомления
         const exitSignal = {
             type: activeSignal.positionType === 'long' ? 'ЗАКРЫТЬ BUY 💰' : 'ЗАКРЫТЬ SELL 💰',
             price: currentPrice,
@@ -790,20 +782,21 @@ function checkTargetReached(currentPrice) {
             action: 'EXIT',
             reason: `Цель достигнута. Прибыль: ${profit}%`
         };
-        displaySignal(exitSignal);
 
-        // 2. ПОЛНОСТЬЮ СБРАСЫВАЕМ СОСТОЯНИЕ ДЛЯ НОВОГО ПОИСКА
+        // 2. СНАЧАЛА полностью сбрасываем состояние, чтобы следующие вызовы видели пустую позицию
+        const oldType = activeSignal.type;
         activeSignal = null;
-        currentPosition = null;
-        entryPrice = null;
-        lastSignal = null;
-        lastSignalTime = 0; // СБРОС ТАЙМЕРА ДЛЯ МГНОВЕННОГО НОВОГО СИГНАЛА
+        currentPosition = null; 
+        entryPrice = null;      
+        lastSignal = null;      // Сбрасываем тип последнего сигнала
+        lastSignalTime = 0;     // Сбрасываем время, чтобы новый анализ прошел сразу
         
-        // 3. МГНОВЕННО ЗАПУСКАЕМ НОВЫЙ АНАЛИЗ (без перезагрузки страницы)
-        console.log("🔄 Ищем новый сигнал...");
-        setTimeout(() => {
-            analyzeMarket();
-        }, 500); // Небольшая задержка 0.5 сек для корректной отрисовки
+        // 3. ОБНОВЛЯЕМ ИНТЕРФЕЙС И ОТПРАВЛЯЕМ В ТЕЛЕГРАМ
+        displaySignal(exitSignal);
+        
+        // 4. Мгновенно запускаем новый анализ для поиска следующей точки
+        console.log("🔄 Ищем новый сигнал без перезагрузки страницы...");
+        analyzeMarket();
     }
 }
 
