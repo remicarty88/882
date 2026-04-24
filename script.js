@@ -172,6 +172,15 @@ function analyzeMarket() {
     const signal = generateSignal(rsi, sma20, sma50, last, levels);
     
     if (signal) {
+        // Проверка на проскальзывание (Slippage check)
+        const currentPrice = last.close;
+        const priceDiff = Math.abs(currentPrice - signal.price);
+        
+        if (signal.action === 'ENTRY' && priceDiff > 0.3) {
+            console.log("⚠️ Вход пропущен: цена ушла слишком далеко");
+            return; // Не шлем сигнал, если цена уже улетела на $0.3
+        }
+
         displaySignal(signal);
         activeSignal = signal;
         lastSignal = signal.type;
@@ -458,14 +467,12 @@ async function sendTelegramMessage(signal) {
     let text = "";
     if (signal.action === 'ENTRY') {
         const targetDist = Math.abs(signal.target - signal.price).toFixed(2);
-        const stopDist = Math.abs(signal.stop - signal.price).toFixed(2);
         
-        text = `🎯 *СИГНАЛ ВХОДА!*\n\n` +
+        text = `🎯 *БЫСТРЫЙ ВХОД!* (Мгновенно)\n\n` +
                `*Направление:* ${signal.type}\n` +
-               `*Цена входа:* $${signal.price.toFixed(2)}\n` +
-               `*Цель (TP):* +$${targetDist}\n` +
-               `*Стоп (SL):* -$${stopDist}\n\n` +
-               `� *Для МТ:* Ставь Тейк +$${targetDist} от текущей цены у брокера!`;
+               `*Входи по рынку сейчас!*\n` +
+               `*Тейк-профит:* +$${targetDist}\n\n` +
+               `⚠️ *Не входи, если цена в МТ уже ушла на $0.5 от ${signal.price.toFixed(2)}*`;
     } else if (signal.action === 'EXIT') {
         const profitEmoji = signal.profit > 0 ? '💰' : '⚠️';
         text = `${profitEmoji} *ЗАКРЫТИЕ ПОЗИЦИИ*\n\n` +
