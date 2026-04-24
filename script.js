@@ -172,6 +172,11 @@ function analyzeMarket() {
     const signal = generateSignal(rsi, sma20, sma50, last, levels);
     
     if (signal) {
+        // Защита от флуда: не слать одинаковые прогнозы чаще чем раз в 3 минуты
+        if (lastSignal === signal.type && (now - lastSignalTime < 180000) && signal.action === 'WAIT') {
+            return;
+        }
+        
         displaySignal(signal);
         activeSignal = signal;
         lastSignal = signal.type;
@@ -196,10 +201,9 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     const isBullTrend = last.close > calculateSMA(10); // Быстрая скользящая
     const isBearTrend = last.close < calculateSMA(10); 
     
-    // RSI для скальпинга (очень чувствительный)
-    const rsiBullish = rsi < 48; 
-    const rsiBearish = rsi > 52; 
-
+    // RSI для скальпинга (Оптимальный баланс)
+    const rsiBullish = rsi > 30 && rsi < 50; 
+    const rsiBearish = rsi > 50 && rsi < 75; 
     // Минимальное замедление цены для скальп-входа
     const lastCandleBody = Math.abs(last.close - last.open);
     const isPriceStalled = lastCandleBody < 1.5; 
@@ -647,7 +651,8 @@ function addSignalToPage(signal) {
         timeHtml = `<div class="signal-time-estimate">Время до цели: ${signal.timeToTarget}</div>`;
     }
     
-    signalItem.innerHTML = `
+        const timeToTarget = calculateTimeToTarget(signal.price, signal.target);
+        signalItem.innerHTML = `
         <div class="signal-header">
             <span class="signal-type">${signal.type}</span>
             <span class="signal-time">${time}</span>
@@ -655,7 +660,7 @@ function addSignalToPage(signal) {
         <div class="signal-price">$${signal.price.toFixed(2)}</div>
         <div class="signal-reason">${signal.reason}</div>
         ${targetHtml}
-        ${timeHtml}
+        <div class="signal-time-estimate">Время до цели: ${timeToTarget}</div>
         <div class="signal-status">Активный сигнал</div>
     `;
     
@@ -773,26 +778,30 @@ function checkTargetReached(currentPrice) {
     
     if (reached) {
         const profit = ((currentPrice - activeSignal.entryPrice) / activeSignal.entryPrice * 100).toFixed(2);
-        console.log(`\n🎉 ЦЕЛЬ ДОСТИГНУТА! Прибыль: ${profit}%\n`);
         
-        // Отправляем уведомление о закрытии перед сбросом
+        // Отправляем уведомление о закрытии
         const exitSignal = {
             type: activeSignal.positionType === 'long' ? 'ЗАКРЫТЬ BUY 💰' : 'ЗАКРЫТЬ SELL 💰',
             price: currentPrice,
             profit: profit,
-            action: 'EXIT'
+            action: 'EXIT',
+            reason: `Цель достигнута. Прибыль: ${profit}%`
         };
         displaySignal(exitSignal);
 
-        // Сбрасываем активный сигнал и время, чтобы разрешить немедленное обновление
+        // ПОЛНЫЙ СБРОС СОСТОЯНИЯ ДЛЯ ПОИСКА НОВОГО СИГНАЛА
         activeSignal = null;
-        currentPosition = null; // ВАЖНО: сбросить текущую позицию
-        entryPrice = null;      // ВАЖНО: сбросить цену входа
+        currentPosition = null;
+        entryPrice = null;
         lastSignal = null;
-        lastSignalTime = 0; 
+        lastSignalTime = 0; // Сбрасываем кулдаун, чтобы искать новый сигнал сразу
         
-        // Немедленно запускаем новый анализ для поиска следующей точки
-        analyzeMarket();
+        console.log(`\n🎉 ЦЕЛЬ ДОСТИГНУТА! Состояние сброшено, ищем новый сигнал...\n`);
+        
+        // Сразу запускаем поиск нового сигнала без перезагрузки страницы
+        setTimeout(() => {
+            analyzeMarket();
+        }, 1000);
     }
 }
 
