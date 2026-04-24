@@ -225,6 +225,20 @@ function analyzeMarket() {
         return; // Пропускаем анализ - нет значимых изменений
     }
     
+    // ЛОГИРОВАНИЕ ДЛЯ ТЕЛЕГРАМА (Отправка текущего состояния каждые 5 минут, если нет сигналов)
+    const FIVE_MINUTES = 5 * 60 * 1000;
+    if (now - lastAnalysisTime > FIVE_MINUTES) {
+        const trendEmoji = last.close > sma20 ? '📈' : '📉';
+        const statusText = `📊 *ТЕКУЩЕЕ СОСТОЯНИЕ РЫНКА*\n\n` +
+                          `*Цена:* $${last.close.toFixed(2)}\n` +
+                          `*RSI:* ${rsi.toFixed(1)}\n` +
+                          `*Тренд:* ${last.close > sma20 ? 'Бычий' : 'Медвежий'}\n` +
+                          `*Статус:* ${document.getElementById('prediction-result')?.textContent || 'Анализ...'}`;
+        
+        sendTelegramRawMessage(statusText);
+        lastAnalysisTime = now;
+    }
+    
     console.log(`🔍 АНАЛИЗ: Цена ${last.close.toFixed(2)} (изменение: ${priceChange.toFixed(2)}), RSI: ${rsi.toFixed(1)} (изменение: ${rsiChange.toFixed(1)})`);
     
     // Определяем сигнал
@@ -277,15 +291,15 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     // ==========================================
     // СКАЛЬП-ПОКУПКА (LONG)
     // ==========================================
-    if (!currentPosition && isBullTrend && rsiBullish && last.close <= bb.lower) {
+    if (!currentPosition && isBullTrend && rsiBullish) {
         return {
-            type: '🔥 КРУТОЙ ВХОД: BUY 🟢',
+            type: '� БЫСТРЫЙ ВХОД: BUY 🟢',
             price: last.close,
             entryPrice: last.close,
             target: last.close + tpDistance,
             stop: last.close - slDistance,
-            confidence: 95,
-            reason: `TREND + RSI ${rsi.toFixed(1)} + BB Bottom. ATR Vol: ${atr.toFixed(2)}`,
+            confidence: 80,
+            reason: `TREND + RSI ${rsi.toFixed(1)} | Агрессивный режим`,
             action: 'ENTRY',
             positionType: 'long',
             entryNow: true
@@ -295,15 +309,15 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     // ==========================================
     // СКАЛЬП-ПРОДАЖА (SHORT)
     // ==========================================
-    if (!currentPosition && isBearTrend && rsiBearish && last.close >= bb.upper) {
+    if (!currentPosition && isBearTrend && rsiBearish) {
         return {
-            type: '🔥 КРУТОЙ ВХОД: SELL 🔴',
+            type: '� БЫСТРЫЙ ВХОД: SELL 🔴',
             price: last.close,
             entryPrice: last.close,
             target: last.close - tpDistance,
             stop: last.close + slDistance,
-            confidence: 95,
-            reason: `TREND + RSI ${rsi.toFixed(1)} + BB Top. ATR Vol: ${atr.toFixed(2)}`,
+            confidence: 80,
+            reason: `TREND + RSI ${rsi.toFixed(1)} | Агрессивный режим`,
             action: 'ENTRY',
             positionType: 'short',
             entryNow: true
@@ -949,5 +963,4 @@ if (typeof module !== 'undefined' && module.exports) {
         calculateSMA
     };
 }
-
 
