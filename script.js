@@ -152,26 +152,26 @@ function analyzeMarket() {
     // Ультра-быстрый анализ: убираем все задержки
     const now = Date.now();
     
-    // Анализируем КАЖДЫЙ тик, если нет активной сделки
-    if (activeSignal) return; 
-    
-    console.log(`⚡️ REAL-TIME TICK: ${last.close.toFixed(2)} | RSI: ${rsi.toFixed(1)}`);
-    
-    // Определяем сигнал
+    // Мгновенный анализ КАЖДОГО тика
     const signal = generateSignal(rsi, sma20, sma50, last, levels);
     
     if (signal) {
-        // Проверка на проскальзывание
+        // Минимальный фильтр проскальзывания для точности
         const currentPrice = last.close;
         const priceDiff = Math.abs(currentPrice - signal.price);
         
-        if (signal.action === 'ENTRY' && priceDiff > 0.3) return;
+        if (signal.action === 'ENTRY' && priceDiff > 0.5) return;
 
-        // Отправляем в Telegram и обновляем UI если в браузере
+        // Отправляем в Telegram и UI мгновенно
         if (typeof displaySignal === 'function') displaySignal(signal);
         sendTelegramMessage(signal);
         
-        activeSignal = signal;
+        if (signal.action === 'ENTRY') {
+            activeSignal = signal;
+            currentPosition = signal.positionType;
+            entryPrice = signal.price;
+        }
+        
         lastSignal = signal.type;
         lastSignalTime = now;
     }
@@ -185,38 +185,32 @@ function analyzeMarket() {
 }
 
 function generateSignal(rsi, sma20, sma50, last, levels) {
-    const now = Date.now();
+    // Убираем кулдауны для миллисекундной реакции
     
-    // Cooldown для ультра-скальпинга (5 секунд)
-    if (now - lastSignalTime < 5000) return null;
-
     // ГРАМОТНЫЕ ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ
-    const sma10 = calculateSMA(10);
-    const sma20 = calculateSMA(20);
-    const sma50 = calculateSMA(50);
+    const sma10Value = calculateSMA(10);
+    const sma20Value = calculateSMA(20);
     
     // Подтверждение тренда: цена выше SMA10 и SMA10 > SMA20
-    const isBullTrend = last.close > sma10 && sma10 > sma20;
-    const isBearTrend = last.close < sma10 && sma10 < sma20; 
+    const isBullTrend = last.close > sma10Value && sma10Value > sma20Value;
+    const isBearTrend = last.close < sma10Value && sma10Value < sma20Value; 
     
-    // RSI фильтры для исключения входов на излете движения
-    // BUY: RSI должен быть в зоне накопления (35-50), а не перекупленности
-    const rsiBullish = rsi > 35 && rsi < 50; 
-    // SELL: RSI должен быть в зоне распределения (50-65), а не перепроданности
-    const rsiBearish = rsi > 50 && rsi < 65; 
+    // RSI фильтры: Более широкие для миллисекундного скальпинга
+    const rsiBullish = rsi > 30 && rsi < 55; 
+    const rsiBearish = rsi > 45 && rsi < 70; 
 
-    // Дополнительный фильтр: Волатильность (тело свечи должно быть здоровым, но не аномальным)
+    // Волатильность: анализируем даже минимальные движения
     const candleBody = Math.abs(last.close - last.open);
-    const isValidVolatility = candleBody > 0.1 && candleBody < 2.0;
+    const isValidVolatility = true; // Включаем на каждом движении
 
-    // Скальпинг параметры (адаптивные под волатильность)
+    // Скальпинг параметры
     const scalpTarget = 1.5;
-    const scalpStop = 1.2; // Стоп чуть короче тейка для положительного матожидания
+    const scalpStop = 1.2; 
 
     // ==========================================
-    // ГРАМОТНАЯ СКАЛЬП-ПОКУПКА (LONG)
+    // СКАЛЬП-ПОКУПКА (LONG)
     // ==========================================
-    if (!currentPosition && isBullTrend && rsiBullish && isValidVolatility) {
+    if (!currentPosition && isBullTrend && rsiBullish) {
         return {
             type: 'СКАЛЬП-ВХОД: BUY 🟢',
             price: last.close,
@@ -224,7 +218,7 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
             target: last.close + scalpTarget,
             stop: last.close - scalpStop,
             confidence: 92,
-            reason: `ТРЕНД ПОДТВЕРЖДЕН | RSI: ${rsi.toFixed(1)} | ВОЛАТИЛЬНОСТЬ ОК`,
+            reason: `ТРЕНД: РОСТ | RSI: ${rsi.toFixed(1)}`,
             action: 'ENTRY',
             positionType: 'long',
             entryNow: true
@@ -232,9 +226,9 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     }
 
     // ==========================================
-    // ГРАМОТНАЯ СКАЛЬП-ПРОДАЖА (SHORT)
+    // СКАЛЬП-ПРОДАЖА (SHORT)
     // ==========================================
-    if (!currentPosition && isBearTrend && rsiBearish && isValidVolatility) {
+    if (!currentPosition && isBearTrend && rsiBearish) {
         return {
             type: 'СКАЛЬП-ВХОД: SELL 🔴',
             price: last.close,
@@ -242,7 +236,7 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
             target: last.close - scalpTarget,
             stop: last.close + scalpStop,
             confidence: 92,
-            reason: `ТРЕНД ПОДТВЕРЖДЕН | RSI: ${rsi.toFixed(1)} | ВОЛАТИЛЬНОСТЬ ОК`,
+            reason: `ТРЕНД: ПАДЕНИЕ | RSI: ${rsi.toFixed(1)}`,
             action: 'ENTRY',
             positionType: 'short',
             entryNow: true
@@ -250,73 +244,58 @@ function generateSignal(rsi, sma20, sma50, last, levels) {
     }
 
     // ==========================================
-    // УПРАВЛЕНИЕ ТЕКУЩЕЙ ПОЗИЦИЕЙ
+    // УПРАВЛЕНИЕ ТЕКУЩЕЙ ПОЗИЦИЕЙ (ЗДЕСЬ ЖЕ ДЛЯ СКОРОСТИ)
     // ==========================================
     if (currentPosition === 'long') {
         const profit = ((last.close - entryPrice) / entryPrice * 100).toFixed(2);
-        
-        // ТЕЙК ПРОФИТ (Ультра-Скальпинг)
-        if (last.close >= entryPrice + 1.5 || rsi > 70) {
+        if (last.close >= entryPrice + scalpTarget || rsi > 70) {
             return {
-                type: 'ФИКСИРУЕМ ПРИБЫЛЬ (SCALP) 💰',
+                type: 'ФИКСИРУЕМ ПРИБЫЛЬ 💰',
                 price: last.close,
-                confidence: 100,
-                reason: `ЦЕЛЬ $1.5 ДОСТИГНУТА. ПРИБЫЛЬ: ${profit}%`,
-                action: 'EXIT',
-                profit: profit
+                profit: profit,
+                action: 'EXIT'
             };
         }
-        // СТОП ЛОСС (Ультра-Скальпинг)
-        if (last.close <= entryPrice - 1.5) {
+        if (last.close <= entryPrice - scalpStop) {
             return {
-                type: 'ЗАКРЫТЬ SCALP (STOP) ⚠️',
+                type: 'ЗАКРЫТЬ В УБЫТОК ⚠️',
                 price: last.close,
-                confidence: 100,
-                reason: `СТОП-ЛОСС $1.5. УБЫТОК: ${profit}%`,
-                action: 'EXIT',
-                profit: profit
+                profit: profit,
+                action: 'EXIT'
             };
         }
     }
 
     if (currentPosition === 'short') {
         const profit = ((entryPrice - last.close) / entryPrice * 100).toFixed(2);
-        
-        // ТЕЙК ПРОФИТ (Ультра-Скальпинг)
-        if (last.close <= entryPrice - 1.5 || rsi < 30) {
+        if (last.close <= entryPrice - scalpTarget || rsi < 30) {
             return {
-                type: 'ФИКСИРУЕМ ПРИБЫЛЬ (SCALP) 💰',
+                type: 'ФИКСИРУЕМ ПРИБЫЛЬ 💰',
                 price: last.close,
-                confidence: 100,
-                reason: `ЦЕЛЬ $1.5 ДОСТИГНУТА. ПРИБЫЛЬ: ${profit}%`,
-                action: 'EXIT',
-                profit: profit
+                profit: profit,
+                action: 'EXIT'
             };
         }
-        // СТОП ЛОСС
-        if (last.close >= entryPrice + 1.5) {
+        if (last.close >= entryPrice + scalpStop) {
             return {
-                type: 'ЗАКРЫТЬ SCALP (STOP) ⚠️',
+                type: 'ЗАКРЫТЬ В УБЫТОК ⚠️',
                 price: last.close,
-                confidence: 100,
-                reason: `СТОП-ЛОСС $1.5. УБЫТОК: ${profit}%`,
-                action: 'EXIT',
-                profit: profit
+                profit: profit,
+                action: 'EXIT'
             };
         }
     }
 
-    // Если ничего не подошло (Генерируем прогноз на основе текущего тренда)
+    // Если нет позиции, даем прогноз
     if (!currentPosition) {
-        const isUp = last.close > sma20;
         return {
-            type: isUp ? 'ПРОГНОЗ: РОСТ 📈' : 'ПРОГНОЗ: ПАДЕНИЕ 📉',
+            type: isBullTrend ? 'ПРОГНОЗ: РОСТ 📈' : 'ПРОГНОЗ: ПАДЕНИЕ 📉',
             price: last.close,
             confidence: 75,
-            reason: isUp ? `Цена выше SMA20, тренд бычий. RSI: ${rsi.toFixed(1)}` : `Цена ниже SMA20, тренд медвежий. RSI: ${rsi.toFixed(1)}`,
+            reason: `RSI: ${rsi.toFixed(1)}`,
             action: 'WAIT',
-            target: isUp ? levels.resistance : levels.support,
-            stop: isUp ? last.close - 15 : last.close + 15
+            target: isBullTrend ? last.close + scalpTarget : last.close - scalpTarget,
+            stop: isBullTrend ? last.close - scalpStop : last.close + scalpStop
         };
     }
 
